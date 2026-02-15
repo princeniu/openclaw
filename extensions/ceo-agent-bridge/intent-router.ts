@@ -14,6 +14,7 @@ export type CeoIntentInput = {
   messageText: string;
   tenantId: string;
   sessionKey: string;
+  requestId?: string;
   timezone?: string;
   now?: Date;
 };
@@ -33,8 +34,9 @@ export type CeoIntentResult =
       error: CeoIntentError;
     };
 
-const DEFAULT_TIMEZONE = "Asia/Shanghai";
 const DEFAULT_LIMIT = 20;
+const DEFAULT_STALE_HOURS = 24;
+const DEFAULT_WEEKLY_SERIES = [1, 1] as const;
 
 function validationError(message: string): CeoIntentResult {
   return {
@@ -48,6 +50,12 @@ function validationError(message: string): CeoIntentResult {
 
 function dateStamp(now: Date): string {
   return now.toISOString().slice(0, 10);
+}
+
+function shiftDays(now: Date, deltaDays: number): Date {
+  const shifted = new Date(now);
+  shifted.setUTCDate(shifted.getUTCDate() + deltaDays);
+  return shifted;
 }
 
 function stripPrefix(text: string, prefix: RegExp): string {
@@ -83,6 +91,7 @@ function extractLatestRunsLimit(text: string): number {
 }
 
 function routeMeeting(input: CeoIntentInput, normalized: string): CeoIntentResult {
+  const now = input.now ?? new Date();
   let transcript = normalized;
   if (/^会议纪要(?:\s|:|：|,|，|-|$)/i.test(normalized)) {
     transcript = stripPrefix(normalized, /^会议纪要(?:\s|:|：|,|，|-)*/i);
@@ -102,8 +111,8 @@ function routeMeeting(input: CeoIntentInput, normalized: string): CeoIntentResul
       method: "POST",
       payload: {
         tenant_id: input.tenantId,
-        session_key: input.sessionKey,
-        transcript,
+        meeting_id: input.requestId ?? `meeting-${now.getTime()}`,
+        raw_text: transcript,
       },
     },
   };
@@ -119,9 +128,8 @@ function routeDaily(input: CeoIntentInput): CeoIntentResult {
       method: "POST",
       payload: {
         tenant_id: input.tenantId,
-        session_key: input.sessionKey,
-        date: dateStamp(now),
-        timezone: input.timezone ?? DEFAULT_TIMEZONE,
+        now_iso: now.toISOString(),
+        stale_hours: DEFAULT_STALE_HOURS,
       },
     },
   };
@@ -129,6 +137,7 @@ function routeDaily(input: CeoIntentInput): CeoIntentResult {
 
 function routeWeekly(input: CeoIntentInput): CeoIntentResult {
   const now = input.now ?? new Date();
+  const periodStart = shiftDays(now, -6);
   return {
     ok: true,
     route: {
@@ -137,9 +146,11 @@ function routeWeekly(input: CeoIntentInput): CeoIntentResult {
       method: "POST",
       payload: {
         tenant_id: input.tenantId,
-        session_key: input.sessionKey,
-        week_anchor_date: dateStamp(now),
-        timezone: input.timezone ?? DEFAULT_TIMEZONE,
+        period_start: dateStamp(periodStart),
+        period_end: dateStamp(now),
+        sales: [...DEFAULT_WEEKLY_SERIES],
+        costs: [...DEFAULT_WEEKLY_SERIES],
+        cashflow: [...DEFAULT_WEEKLY_SERIES],
       },
     },
   };

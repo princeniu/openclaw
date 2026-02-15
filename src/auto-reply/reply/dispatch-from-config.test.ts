@@ -21,6 +21,7 @@ const hookMocks = vi.hoisted(() => ({
   runner: {
     hasHooks: vi.fn(() => false),
     runMessageReceived: vi.fn(async () => {}),
+    runMessageSending: vi.fn(async () => ({})),
   },
 }));
 
@@ -77,6 +78,8 @@ describe("dispatchReplyFromConfig", () => {
     hookMocks.runner.hasHooks.mockReset();
     hookMocks.runner.hasHooks.mockReturnValue(false);
     hookMocks.runner.runMessageReceived.mockReset();
+    hookMocks.runner.runMessageSending.mockReset();
+    hookMocks.runner.runMessageSending.mockResolvedValue({});
   });
   it("does not route when Provider matches OriginatingChannel (even if Surface is missing)", async () => {
     mocks.tryFastAbortFromMessage.mockResolvedValue({
@@ -370,6 +373,47 @@ describe("dispatchReplyFromConfig", () => {
         conversationId: "telegram:999",
       }),
     );
+  });
+
+  it("skips local final reply when message_sending hook cancels", async () => {
+    mocks.tryFastAbortFromMessage.mockResolvedValue({
+      handled: false,
+      aborted: false,
+    });
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName: string) => hookName === "message_sending",
+    );
+    hookMocks.runner.runMessageSending.mockResolvedValue({ cancel: true });
+    const cfg = {} as OpenClawConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      Surface: "telegram",
+      To: "telegram:12345",
+      MessageThreadId: 777,
+      AccountId: "default",
+    });
+
+    const replyResolver = async () => ({ text: "hi" }) satisfies ReplyPayload;
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(hookMocks.runner.runMessageSending).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "telegram:12345",
+        content: "hi",
+        metadata: expect.objectContaining({
+          channel: "telegram",
+          accountId: "default",
+          threadId: 777,
+        }),
+      }),
+      expect.objectContaining({
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:12345",
+      }),
+    );
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
   });
 
   it("emits diagnostics when enabled", async () => {

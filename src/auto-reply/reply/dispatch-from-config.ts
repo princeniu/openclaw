@@ -148,6 +148,7 @@ export async function dispatchReplyFromConfig(params: {
   const inboundAudio = isInboundAudioContext(ctx);
   const sessionTtsAuto = resolveSessionTtsAuto(ctx, cfg);
   const hookRunner = getGlobalHookRunner();
+  const inboundConversationId = ctx.OriginatingTo ?? ctx.To ?? ctx.From ?? undefined;
   if (hookRunner?.hasHooks("message_received")) {
     const timestamp =
       typeof ctx.Timestamp === "number" && Number.isFinite(ctx.Timestamp)
@@ -164,7 +165,7 @@ export async function dispatchReplyFromConfig(params: {
             ? ctx.Body
             : "";
     const channelId = (ctx.OriginatingChannel ?? ctx.Surface ?? ctx.Provider ?? "").toLowerCase();
-    const conversationId = ctx.OriginatingTo ?? ctx.To ?? ctx.From ?? undefined;
+    const conversationId = inboundConversationId;
 
     void hookRunner
       .runMessageReceived(
@@ -196,6 +197,49 @@ export async function dispatchReplyFromConfig(params: {
         logVerbose(`dispatch-from-config: message_received hook failed: ${String(err)}`);
       });
   }
+
+  const applyLocalMessageSendingHook = async (
+    payload: ReplyPayload,
+    kind: "tool" | "block" | "final",
+  ): Promise<ReplyPayload | null> => {
+    if (shouldRouteToOriginating) {
+      return payload;
+    }
+    if (!hookRunner?.hasHooks("message_sending")) {
+      return payload;
+    }
+    const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
+    try {
+      const sendingResult = await hookRunner.runMessageSending(
+        {
+          to: inboundConversationId ?? "",
+          content: payload.text ?? "",
+          metadata: {
+            channel,
+            accountId: ctx.AccountId,
+            conversationId: inboundConversationId,
+            threadId: ctx.MessageThreadId,
+            mediaUrls,
+            kind,
+          },
+        },
+        {
+          channelId: channel,
+          accountId: ctx.AccountId,
+          conversationId: inboundConversationId,
+        },
+      );
+      if (sendingResult?.cancel) {
+        return null;
+      }
+      if (sendingResult?.content != null) {
+        return { ...payload, text: sendingResult.content };
+      }
+    } catch (err) {
+      logVerbose(`dispatch-from-config: message_sending hook failed: ${String(err)}`);
+    }
+    return payload;
+  };
 
   // Check if we should route replies to originating channel instead of dispatcher.
   // Only route when the originating channel is DIFFERENT from the current surface.
@@ -276,7 +320,8 @@ export async function dispatchReplyFromConfig(params: {
           );
         }
       } else {
-        queuedFinal = dispatcher.sendFinalReply(payload);
+        const hookedPayload = await applyLocalMessageSendingHook(payload, "final");
+        queuedFinal = hookedPayload ? dispatcher.sendFinalReply(hookedPayload) : false;
       }
       const counts = dispatcher.getQueuedCounts();
       counts.final += routedFinalCount;
@@ -311,7 +356,10 @@ export async function dispatchReplyFromConfig(params: {
                 if (shouldRouteToOriginating) {
                   await sendPayloadAsync(ttsPayload, undefined, false);
                 } else {
-                  dispatcher.sendToolResult(ttsPayload);
+                  const hookedPayload = await applyLocalMessageSendingHook(ttsPayload, "tool");
+                  if (hookedPayload) {
+                    dispatcher.sendToolResult(hookedPayload);
+                  }
                 }
               };
               return run();
@@ -338,7 +386,10 @@ export async function dispatchReplyFromConfig(params: {
             if (shouldRouteToOriginating) {
               await sendPayloadAsync(ttsPayload, context?.abortSignal, false);
             } else {
-              dispatcher.sendBlockReply(ttsPayload);
+              const hookedPayload = await applyLocalMessageSendingHook(ttsPayload, "block");
+              if (hookedPayload) {
+                dispatcher.sendBlockReply(hookedPayload);
+              }
             }
           };
           return run();
@@ -381,7 +432,10 @@ export async function dispatchReplyFromConfig(params: {
           routedFinalCount += 1;
         }
       } else {
-        queuedFinal = dispatcher.sendFinalReply(ttsReply) || queuedFinal;
+        const hookedPayload = await applyLocalMessageSendingHook(ttsReply, "final");
+        if (hookedPayload) {
+          queuedFinal = dispatcher.sendFinalReply(hookedPayload) || queuedFinal;
+        }
       }
     }
 
@@ -431,8 +485,11 @@ export async function dispatchReplyFromConfig(params: {
               );
             }
           } else {
-            const didQueue = dispatcher.sendFinalReply(ttsOnlyPayload);
-            queuedFinal = didQueue || queuedFinal;
+            const hookedPayload = await applyLocalMessageSendingHook(ttsOnlyPayload, "final");
+            if (hookedPayload) {
+              const didQueue = dispatcher.sendFinalReply(hookedPayload);
+              queuedFinal = didQueue || queuedFinal;
+            }
           }
         }
       } catch (err) {

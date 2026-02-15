@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, test, expect } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import plugin from "./index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,5 +39,220 @@ describe("ceo-agent-bridge plugin scaffold", () => {
     expect(plugin.id).toBe("ceo-agent-bridge");
     expect(plugin.name).toBe("CEO Agent Bridge");
     expect(typeof plugin.register).toBe("function");
+  });
+});
+
+type RegisteredCommand = {
+  name: string;
+  description: string;
+  acceptsArgs?: boolean;
+  requireAuth?: boolean;
+  handler: (ctx: {
+    senderId?: string;
+    channel: string;
+    channelId?: string;
+    isAuthorizedSender: boolean;
+    args?: string;
+    commandBody: string;
+    config: Record<string, unknown>;
+    from?: string;
+    to?: string;
+    accountId?: string;
+    messageThreadId?: number;
+    sessionKey?: string;
+  }) => Promise<{ text?: string }> | { text?: string };
+};
+
+type MessageReceivedHandler = (
+  event: { from: string; content: string; metadata?: Record<string, unknown> },
+  ctx: { channelId: string; accountId?: string; conversationId?: string },
+) => Promise<void> | void;
+type MessageSendingHandler = (
+  event: { to: string; content: string; metadata?: Record<string, unknown> },
+  ctx: { channelId: string; accountId?: string; conversationId?: string },
+) =>
+  | Promise<{ cancel?: boolean; content?: string } | void>
+  | { cancel?: boolean; content?: string }
+  | void;
+
+function createApiStub(params?: {
+  pluginConfig?: Record<string, unknown>;
+  sendMessageTelegram?: ReturnType<typeof vi.fn>;
+}) {
+  const sendMessageTelegram =
+    params?.sendMessageTelegram ?? vi.fn(async () => ({ messageId: "1" }));
+  let registeredCommand: RegisteredCommand | null = null;
+  const hookHandlers: Record<string, MessageReceivedHandler | MessageSendingHandler> = {};
+  const gatewayHandlers: Record<string, unknown> = {};
+
+  const api = {
+    id: "ceo-agent-bridge",
+    name: "CEO Agent Bridge",
+    source: "test",
+    config: {},
+    pluginConfig: params?.pluginConfig ?? {},
+    runtime: {
+      channel: {
+        telegram: {
+          sendMessageTelegram,
+        },
+      },
+    },
+    logger: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    },
+    registerGatewayMethod(method: string, handler: unknown) {
+      gatewayHandlers[method] = handler;
+    },
+    registerCommand(command: RegisteredCommand) {
+      registeredCommand = command;
+    },
+    on(hookName: string, handler: MessageReceivedHandler | MessageSendingHandler) {
+      hookHandlers[hookName] = handler;
+    },
+  };
+
+  plugin.register(api as never);
+
+  return {
+    sendMessageTelegram,
+    gatewayHandlers,
+    getCommand: () => registeredCommand,
+    getMessageReceivedHook: () =>
+      hookHandlers.message_received as MessageReceivedHandler | undefined,
+    getMessageSendingHook: () => hookHandlers.message_sending as MessageSendingHandler | undefined,
+  };
+}
+
+describe("ceo-agent-bridge /ceo command", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    globalThis.fetch = originalFetch;
+  });
+
+  test("registers /ceo command", () => {
+    const { getCommand } = createApiStub();
+    const command = getCommand();
+    expect(command?.name).toBe("ceo");
+    expect(command?.acceptsArgs).toBe(true);
+  });
+
+  test("routes inbound telegram text only when /ceo mode is on", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          request_id: "manual-daily-001",
+          run_id: "run-123",
+          overdue_tasks_count: 0,
+          stale_tasks_count: 0,
+        }),
+        {
+          status: 200,
+          headers: { "x-request-id": "manual-daily-001" },
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCommand, getMessageReceivedHook, getMessageSendingHook, sendMessageTelegram } =
+      createApiStub({
+        pluginConfig: {
+          mvpBaseUrl: "http://localhost:8787",
+          mvpApiToken: "token",
+          defaultTenantId: "tenant_a",
+        },
+      });
+    const command = getCommand();
+    const messageReceived = getMessageReceivedHook();
+    const messageSending = getMessageSendingHook();
+    expect(command).toBeTruthy();
+    expect(messageReceived).toBeTruthy();
+    expect(messageSending).toBeTruthy();
+
+    const onResult = await command!.handler({
+      channel: "telegram",
+      isAuthorizedSender: true,
+      commandBody: "/ceo on",
+      args: "on",
+      config: {},
+      to: "telegram:12345",
+      accountId: "default",
+    });
+    expect(onResult.text).toContain("enabled");
+
+    await messageReceived!(
+      {
+        from: "telegram:12345",
+        content: "daily",
+        metadata: {
+          to: "telegram:12345",
+        },
+      },
+      {
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:12345",
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    const sendingResult = await messageSending!(
+      {
+        to: "telegram:12345",
+        content: "normal reply",
+        metadata: { threadId: undefined },
+      },
+      {
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:12345",
+      },
+    );
+    expect(sendingResult).toMatchObject({ cancel: true });
+    const secondSendingResult = await messageSending!(
+      {
+        to: "telegram:12345",
+        content: "normal reply chunk 2",
+        metadata: { threadId: undefined },
+      },
+      {
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:12345",
+      },
+    );
+    expect(secondSendingResult).toMatchObject({ cancel: true });
+
+    await command!.handler({
+      channel: "telegram",
+      isAuthorizedSender: true,
+      commandBody: "/ceo off",
+      args: "off",
+      config: {},
+      to: "telegram:12345",
+      accountId: "default",
+    });
+
+    await messageReceived!(
+      {
+        from: "telegram:12345",
+        content: "daily",
+        metadata: {
+          to: "telegram:12345",
+        },
+      },
+      {
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:12345",
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

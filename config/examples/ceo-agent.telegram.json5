@@ -1,27 +1,57 @@
 {
+  meta: {
+    lastTouchedVersion: "2026.2.13",
+    lastTouchedAt: "2026-02-15T06:29:12.885Z",
+  },
+  auth: {
+    profiles: {
+      "openai-codex:default": {
+        provider: "openai-codex",
+        mode: "oauth",
+      },
+    },
+  },
+  agents: {
+    defaults: {
+      model: {
+        primary: "openai-codex/gpt-5.3-codex",
+      },
+      models: {
+        "openai-codex/gpt-5.3-codex": {},
+      },
+      compaction: {
+        mode: "safeguard",
+      },
+    },
+  },
+  commands: {
+    native: "auto",
+    nativeSkills: "auto",
+  },
+  hooks: {
+    enabled: true,
+    token: "${OPENCLAW_HOOKS_TOKEN}",
+  },
+  channels: {
+    telegram: {
+      enabled: true,
+      dmPolicy: "pairing",
+      botToken: "${TELEGRAM_BOT_TOKEN}",
+      groups: {
+        "*": {
+          requireMention: true,
+        },
+      },
+      groupPolicy: "allowlist",
+      streamMode: "partial",
+    },
+  },
   gateway: {
     auth: {
       mode: "token",
       token: "${OPENCLAW_GATEWAY_TOKEN}",
     },
   },
-
-  channels: {
-    telegram: {
-      enabled: true,
-      botToken: "${TELEGRAM_BOT_TOKEN}",
-      dmPolicy: "pairing",
-      groups: {
-        "*": { requireMention: true },
-      },
-    },
-  },
-
-  hooks: {
-    enabled: true,
-    token: "${OPENCLAW_HOOKS_TOKEN}",
-  },
-
   plugins: {
     entries: {
       "ceo-agent-bridge": {
@@ -31,6 +61,9 @@
           mvpApiToken: "${CEO_AGENT_API_TOKEN}",
           defaultTenantId: "tenant_a",
         },
+      },
+      telegram: {
+        enabled: true,
       },
     },
   },

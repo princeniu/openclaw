@@ -249,6 +249,12 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  extensions/ceo-agent-bridge:
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   extensions/copilot-proxy:
     devDependencies:
       openclaw:

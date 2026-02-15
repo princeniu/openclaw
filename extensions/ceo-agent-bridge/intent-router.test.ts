@@ -7,6 +7,7 @@ describe("ceo-agent-bridge intent router", () => {
       messageText: "会议纪要 今天讨论了产品发布节奏",
       tenantId: "tenant-a",
       sessionKey: "telegram:u1",
+      requestId: "req-meeting-1",
     });
 
     expect(result.ok).toBe(true);
@@ -17,8 +18,8 @@ describe("ceo-agent-bridge intent router", () => {
     expect(result.route.method).toBe("POST");
     expect(result.route.payload).toMatchObject({
       tenant_id: "tenant-a",
-      session_key: "telegram:u1",
-      transcript: "今天讨论了产品发布节奏",
+      meeting_id: "req-meeting-1",
+      raw_text: "今天讨论了产品发布节奏",
     });
   });
 
@@ -39,9 +40,8 @@ describe("ceo-agent-bridge intent router", () => {
     expect(result.route.method).toBe("POST");
     expect(result.route.payload).toMatchObject({
       tenant_id: "tenant-a",
-      session_key: "telegram:u1",
-      date: "2026-02-15",
-      timezone: "Asia/Shanghai",
+      now_iso: "2026-02-15T08:30:00.000Z",
+      stale_hours: 24,
     });
   });
 
@@ -62,9 +62,11 @@ describe("ceo-agent-bridge intent router", () => {
     expect(result.route.method).toBe("POST");
     expect(result.route.payload).toMatchObject({
       tenant_id: "tenant-a",
-      session_key: "telegram:u1",
-      week_anchor_date: "2026-02-15",
-      timezone: "Asia/Shanghai",
+      period_start: "2026-02-09",
+      period_end: "2026-02-15",
+      sales: [1, 1],
+      costs: [1, 1],
+      cashflow: [1, 1],
     });
   });
 

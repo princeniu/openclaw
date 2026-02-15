@@ -480,11 +480,17 @@ async function deliverOutboundPayloadsCore(
             {
               to,
               content: payloadSummary.text,
-              metadata: { channel, accountId, mediaUrls: payloadSummary.mediaUrls },
+              metadata: {
+                channel,
+                accountId,
+                mediaUrls: payloadSummary.mediaUrls,
+                threadId: threadId ?? undefined,
+              },
             },
             {
               channelId: channel,
               accountId: accountId ?? undefined,
+              conversationId: to,
             },
           );
           if (sendingResult?.cancel) {
