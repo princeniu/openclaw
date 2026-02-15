@@ -1,0 +1,37 @@
+{
+  gateway: {
+    auth: {
+      mode: "token",
+      token: "${OPENCLAW_GATEWAY_TOKEN}",
+    },
+  },
+
+  channels: {
+    telegram: {
+      enabled: true,
+      botToken: "${TELEGRAM_BOT_TOKEN}",
+      dmPolicy: "pairing",
+      groups: {
+        "*": { requireMention: true },
+      },
+    },
+  },
+
+  hooks: {
+    enabled: true,
+    token: "${OPENCLAW_HOOKS_TOKEN}",
+  },
+
+  plugins: {
+    entries: {
+      "ceo-agent-bridge": {
+        enabled: true,
+        config: {
+          mvpBaseUrl: "http://127.0.0.1:8000",
+          mvpApiToken: "${CEO_AGENT_API_TOKEN}",
+          defaultTenantId: "tenant_a",
+        },
+      },
+    },
+  },
+}

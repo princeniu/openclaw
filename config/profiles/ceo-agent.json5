@@ -1,0 +1,35 @@
+{
+  gateway: {
+    port: 18789,
+    auth: {
+      mode: "token",
+      token: "${OPENCLAW_GATEWAY_TOKEN}",
+    },
+  },
+
+  hooks: {
+    enabled: true,
+    token: "${OPENCLAW_HOOKS_TOKEN}",
+    path: "/hooks",
+    allowedAgentIds: ["main"],
+  },
+
+  plugins: {
+    enabled: true,
+    entries: {
+      "ceo-agent-bridge": {
+        enabled: true,
+        config: {
+          mvpBaseUrl: "${CEO_AGENT_API_BASE_URL}",
+          mvpApiToken: "${CEO_AGENT_API_TOKEN}",
+          requestTimeoutMs: 8000,
+        },
+      },
+    },
+  },
+
+  channels: {
+    telegram: { enabled: false },
+    feishu: { enabled: false },
+  },
+}
