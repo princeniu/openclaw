@@ -100,18 +100,43 @@ function buildModeKey(params: {
   return `${channel}|${accountId}|${conversationId}|${threadId}`;
 }
 
-function resolveCommandConversationId(params: {
+function buildModeKeys(params: {
+  channel: string;
+  accountId?: string;
+  threadId?: string;
+  conversationIds: Array<string | undefined>;
+}): string[] {
+  const keys = new Set<string>();
+  for (const conversationId of params.conversationIds) {
+    const key = buildModeKey({
+      channel: params.channel,
+      accountId: params.accountId,
+      conversationId,
+      threadId: params.threadId,
+    });
+    if (key) {
+      keys.add(key);
+    }
+  }
+  return [...keys];
+}
+
+function resolveCommandConversationIds(params: {
   to?: string;
   from?: string;
   senderId?: string;
-}): string | undefined {
+}): string[] {
+  const out: string[] = [];
   const candidates = [params.to, params.from, params.senderId];
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim()) {
-      return candidate.trim();
+      const trimmed = candidate.trim();
+      if (!out.includes(trimmed)) {
+        out.push(trimmed);
+      }
     }
   }
-  return undefined;
+  return out;
 }
 
 function readMetadataString(
@@ -120,6 +145,81 @@ function readMetadataString(
 ): string | undefined {
   const value = metadata?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+type CeoModeAction = "on" | "off" | "status";
+
+function parseCeoSlashAction(value: string): CeoModeAction | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "on" || normalized === "enable") {
+    return "on";
+  }
+  if (normalized === "off" || normalized === "disable") {
+    return "off";
+  }
+  if (normalized === "status" || normalized.length === 0) {
+    return "status";
+  }
+  return undefined;
+}
+
+function parseCeoNaturalAction(value: string): Exclude<CeoModeAction, "status"> | undefined {
+  const normalized = value.trim().toLowerCase();
+  const compact = normalized.replace(/[\s,，.。!！?？:：]+/g, "");
+
+  const hasCeoContext =
+    compact.includes("ceo") ||
+    /(?:\bceo\b|ceo\s*mode|首席执行官|老板模式|ceomode)/i.test(normalized);
+  if (!hasCeoContext) {
+    return undefined;
+  }
+
+  const onCompactKeywords = [
+    "开启ceo",
+    "打开ceo",
+    "启用ceo",
+    "切到ceo",
+    "切换到ceo",
+    "进入ceo",
+    "ceo模式开",
+    "ceoon",
+    "ceomodeon",
+  ];
+  const offCompactKeywords = [
+    "关闭ceo",
+    "关掉ceo",
+    "停用ceo",
+    "退出ceo",
+    "ceo模式关",
+    "ceooff",
+    "ceomodeoff",
+  ];
+
+  const onWordKeywords = ["on", "enable", "start"];
+  const offWordKeywords = ["off", "disable", "stop"];
+
+  const scoreCompact = (keywords: string[]): number =>
+    keywords.reduce((score, keyword) => score + (compact.includes(keyword) ? 2 : 0), 0);
+
+  const scoreWords = (keywords: string[]): number =>
+    keywords.reduce((score, keyword) => {
+      const pattern = new RegExp(`\\b${keyword}\\b`, "i");
+      return score + (pattern.test(normalized) ? 1 : 0);
+    }, 0);
+
+  const onScore = scoreCompact(onCompactKeywords) + scoreWords(onWordKeywords);
+  const offScore = scoreCompact(offCompactKeywords) + scoreWords(offWordKeywords);
+
+  if (onScore === 0 && offScore === 0) {
+    return undefined;
+  }
+  if (onScore > offScore) {
+    return "on";
+  }
+  if (offScore > onScore) {
+    return "off";
+  }
+  return undefined;
 }
 
 function formatChatResult(params: {
@@ -222,6 +322,30 @@ const plugin = {
         return false;
       }
       return true;
+    };
+
+    const isCeoModeEnabled = (modeKeys: string[]): boolean =>
+      modeKeys.some((modeKey) => ceoModeKeys.has(modeKey));
+
+    const modeKeysWithinSuppressionWindow = (modeKeys: string[]): string[] =>
+      modeKeys.filter((modeKey) => isWithinSuppressionWindow(modeKey));
+
+    const applyModeAction = (modeKeys: string[], action: CeoModeAction): string => {
+      if (action === "on") {
+        for (const modeKey of modeKeys) {
+          ceoModeKeys.add(modeKey);
+          suppressUntilMsByModeKey.delete(modeKey);
+        }
+        return "CEO mode enabled. Regular chat text will route to CEO APIs.";
+      }
+      if (action === "off") {
+        for (const modeKey of modeKeys) {
+          ceoModeKeys.delete(modeKey);
+          suppressUntilMsByModeKey.delete(modeKey);
+        }
+        return "CEO mode disabled. Chat is back to normal agent replies.";
+      }
+      return isCeoModeEnabled(modeKeys) ? "CEO mode: ON" : "CEO mode: OFF";
     };
 
     type RouteExecutionResult =
@@ -405,50 +529,70 @@ const plugin = {
       };
     };
 
+    const sendBridgeReply = async (params: {
+      channel: string;
+      conversationId: string;
+      text: string;
+      accountId?: string;
+      threadId?: string;
+      sessionKey?: string;
+    }) => {
+      if (params.channel === "telegram") {
+        await api.runtime.channel.telegram.sendMessageTelegram(params.conversationId, params.text, {
+          accountId: params.accountId,
+          messageThreadId: parseThreadIdNumber(params.threadId),
+        });
+        return;
+      }
+
+      const { routeReply } = await import("../../src/auto-reply/reply/route-reply.js");
+      const routed = await routeReply({
+        payload: { text: params.text },
+        channel: params.channel as never,
+        to: params.conversationId,
+        accountId: params.accountId,
+        threadId: params.threadId,
+        sessionKey: params.sessionKey,
+        cfg: api.config,
+        mirror: false,
+      });
+
+      if (!routed.ok) {
+        throw new Error(routed.error ?? `Failed to route reply to channel=${params.channel}`);
+      }
+    };
+
     api.registerCommand({
       name: "ceo",
       description: "Toggle CEO routing mode: /ceo on|off|status",
       acceptsArgs: true,
       handler: (ctx) => {
-        const action = (ctx.args ?? "status").trim().toLowerCase();
-        const conversationId = resolveCommandConversationId({
-          to: ctx.to,
-          from: ctx.from,
-          senderId: ctx.senderId,
-        });
-        const modeKey = buildModeKey({
+        const parsedAction = parseCeoSlashAction(ctx.args ?? "status");
+        const modeKeys = buildModeKeys({
           channel: ctx.channel,
           accountId: ctx.accountId,
-          conversationId,
           threadId: normalizeThreadId(ctx.messageThreadId),
+          conversationIds: [
+            ...resolveCommandConversationIds({
+              to: ctx.to,
+              from: ctx.from,
+              senderId: ctx.senderId,
+            }),
+            ctx.sessionKey,
+          ],
         });
-        if (!modeKey) {
+        if (modeKeys.length === 0) {
           return {
             text: "Unable to resolve chat scope for /ceo command.",
           };
         }
-
-        if (action === "on" || action === "enable") {
-          ceoModeKeys.add(modeKey);
-          suppressUntilMsByModeKey.delete(modeKey);
+        if (!parsedAction) {
           return {
-            text: "CEO mode enabled. Regular chat text will route to CEO APIs.",
-          };
-        }
-        if (action === "off" || action === "disable") {
-          ceoModeKeys.delete(modeKey);
-          suppressUntilMsByModeKey.delete(modeKey);
-          return {
-            text: "CEO mode disabled. Chat is back to normal agent replies.",
-          };
-        }
-        if (action === "status" || action.length === 0) {
-          return {
-            text: ceoModeKeys.has(modeKey) ? "CEO mode: ON" : "CEO mode: OFF",
+            text: "Usage: /ceo on | /ceo off | /ceo status",
           };
         }
         return {
-          text: "Usage: /ceo on | /ceo off | /ceo status",
+          text: applyModeAction(modeKeys, parsedAction),
         };
       },
     });
@@ -458,19 +602,30 @@ const plugin = {
         event.metadata && typeof event.metadata === "object"
           ? (event.metadata as Record<string, unknown>)
           : undefined;
-      const modeKey = buildModeKey({
+      const sendingKind = readMetadataString(metadata, "kind");
+      const sendingSessionKey = readMetadataString(metadata, "sessionKey");
+      if (!sendingKind && !sendingSessionKey) {
+        return {};
+      }
+      const modeKeys = buildModeKeys({
         channel: ctx.channelId,
         accountId: ctx.accountId,
-        conversationId: ctx.conversationId ?? event.to,
         threadId: normalizeThreadId(metadata?.threadId),
+        conversationIds: [
+          ctx.conversationId,
+          event.to,
+          readMetadataString(metadata, "conversationId"),
+          readMetadataString(metadata, "sessionKey"),
+        ],
       });
-      if (!modeKey) {
+      if (modeKeys.length === 0) {
         return {};
       }
-      if (!ceoModeKeys.has(modeKey)) {
+      const suppressionKeys = modeKeysWithinSuppressionWindow(modeKeys);
+      if (!isCeoModeEnabled(modeKeys) && suppressionKeys.length === 0) {
         return {};
       }
-      if (!isWithinSuppressionWindow(modeKey)) {
+      if (suppressionKeys.length === 0) {
         return {};
       }
       return { cancel: true };
@@ -478,7 +633,7 @@ const plugin = {
 
     api.on("message_received", async (event, ctx) => {
       const channel = ctx.channelId.trim().toLowerCase();
-      if (channel !== "telegram") {
+      if (channel !== "telegram" && channel !== "feishu") {
         return;
       }
       const metadata =
@@ -487,26 +642,63 @@ const plugin = {
           : undefined;
       const conversationId = ctx.conversationId ?? readMetadataString(metadata, "to") ?? event.from;
       const threadId = normalizeThreadId(metadata?.threadId);
-      const modeKey = buildModeKey({
+      const modeKeys = buildModeKeys({
         channel,
         accountId: ctx.accountId,
-        conversationId,
         threadId,
+        conversationIds: [
+          ctx.conversationId,
+          readMetadataString(metadata, "conversationId"),
+          readMetadataString(metadata, "to"),
+          readMetadataString(metadata, "senderId"),
+          readMetadataString(metadata, "sessionKey"),
+          event.from,
+        ],
       });
-      if (!modeKey || !ceoModeKeys.has(modeKey)) {
+      if (modeKeys.length === 0) {
         return;
       }
 
       const messageText = event.content.trim();
-      if (!messageText || messageText.startsWith("/")) {
+      if (!messageText) {
         return;
       }
 
-      startSuppressionWindow(modeKey);
+      const naturalModeAction = parseCeoNaturalAction(messageText);
+      if (naturalModeAction) {
+        const text = applyModeAction(modeKeys, naturalModeAction);
+        try {
+          await sendBridgeReply({
+            channel,
+            conversationId,
+            text,
+            accountId: ctx.accountId,
+            threadId,
+          });
+        } catch (error) {
+          api.logger.error(
+            `ceo-agent-bridge failed to send mode reply channel=${channel} error=${String(error)}`,
+          );
+        }
+        return;
+      }
+
+      if (!isCeoModeEnabled(modeKeys)) {
+        return;
+      }
+
+      if (messageText.startsWith("/")) {
+        return;
+      }
+
+      for (const modeKey of modeKeys) {
+        startSuppressionWindow(modeKey);
+      }
+      const peerId = channel === "feishu" ? event.from : conversationId;
       const execution = await executeRoutedIntent({
         messageText,
         channel,
-        peerId: conversationId,
+        peerId,
         threadId,
       });
 
@@ -519,10 +711,39 @@ const plugin = {
           })
         : formatChatError(execution.code, execution.error);
 
-      await api.runtime.channel.telegram.sendMessageTelegram(conversationId, text, {
-        accountId: ctx.accountId,
-        messageThreadId: parseThreadIdNumber(threadId),
-      });
+      try {
+        await sendBridgeReply({
+          channel,
+          conversationId,
+          text,
+          accountId: ctx.accountId,
+          threadId,
+          sessionKey: execution.ok ? execution.identity.sessionKey : undefined,
+        });
+      } catch (error) {
+        for (const modeKey of modeKeys) {
+          suppressUntilMsByModeKey.delete(modeKey);
+        }
+        api.logger.error(
+          JSON.stringify(
+            buildBridgeTelemetryLog({
+              channel,
+              peerId: conversationId,
+              sessionKey: execution.ok ? execution.identity.sessionKey : undefined,
+              requestId: execution.ok ? execution.requestId : undefined,
+              runId: execution.ok ? execution.runId : undefined,
+              latencyMs: 0,
+              status: "error",
+              intent: execution.ok ? execution.route.intent : undefined,
+              endpoint: execution.ok ? execution.route.endpoint : undefined,
+              errorCode: "send_error",
+            }),
+          ),
+        );
+        api.logger.error(
+          `ceo-agent-bridge failed to send routed reply channel=${channel} error=${String(error)}`,
+        );
+      }
     });
 
     api.registerGatewayMethod(

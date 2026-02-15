@@ -5,6 +5,11 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import plugin from "./index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const routeReplyMock = vi.hoisted(() => vi.fn(async () => ({ ok: true, messageId: "1" })));
+
+vi.mock("../../src/auto-reply/reply/route-reply.js", () => ({
+  routeReply: routeReplyMock,
+}));
 
 describe("ceo-agent-bridge plugin scaffold", () => {
   test("has valid manifest and register entry", async () => {
@@ -132,6 +137,7 @@ describe("ceo-agent-bridge /ceo command", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     globalThis.fetch = originalFetch;
+    routeReplyMock.mockClear();
   });
 
   test("registers /ceo command", () => {
@@ -205,7 +211,7 @@ describe("ceo-agent-bridge /ceo command", () => {
       {
         to: "telegram:12345",
         content: "normal reply",
-        metadata: { threadId: undefined },
+        metadata: { threadId: undefined, kind: "final", sessionKey: "agent:main:main" },
       },
       {
         channelId: "telegram",
@@ -218,7 +224,7 @@ describe("ceo-agent-bridge /ceo command", () => {
       {
         to: "telegram:12345",
         content: "normal reply chunk 2",
-        metadata: { threadId: undefined },
+        metadata: { threadId: undefined, kind: "final", sessionKey: "agent:main:main" },
       },
       {
         channelId: "telegram",
@@ -250,6 +256,266 @@ describe("ceo-agent-bridge /ceo command", () => {
         channelId: "telegram",
         accountId: "default",
         conversationId: "telegram:12345",
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("routes inbound feishu text only when /ceo mode is on", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          request_id: "manual-daily-002",
+          run_id: "run-feishu-1",
+          overdue_tasks_count: 0,
+          stale_tasks_count: 0,
+        }),
+        {
+          status: 200,
+          headers: { "x-request-id": "manual-daily-002" },
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCommand, getMessageReceivedHook, getMessageSendingHook, sendMessageTelegram } =
+      createApiStub({
+        pluginConfig: {
+          mvpBaseUrl: "http://localhost:8787",
+          mvpApiToken: "token",
+          defaultTenantId: "tenant_a",
+        },
+      });
+    const command = getCommand();
+    const messageReceived = getMessageReceivedHook();
+    const messageSending = getMessageSendingHook();
+    const feishuSessionKey = "agent:main:feishu:direct:ou_sender_1";
+    expect(command).toBeTruthy();
+    expect(messageReceived).toBeTruthy();
+    expect(messageSending).toBeTruthy();
+
+    const onResult = await command!.handler({
+      channel: "feishu",
+      isAuthorizedSender: true,
+      commandBody: "/ceo on",
+      args: "on",
+      config: {},
+      to: "user:ou_sender_1",
+      from: "feishu:ou_sender_1",
+      senderId: "ou_sender_1",
+      accountId: "main",
+      sessionKey: feishuSessionKey,
+    });
+    expect(onResult.text).toContain("enabled");
+
+    await messageReceived!(
+      {
+        from: "feishu:ou_sender_1",
+        content: "daily",
+        metadata: {
+          to: "chat:oc_feishu_chat_1",
+          senderId: "ou_sender_1",
+          sessionKey: feishuSessionKey,
+        },
+      },
+      {
+        channelId: "feishu",
+        accountId: "main",
+        conversationId: "chat:oc_feishu_chat_1",
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageTelegram).not.toHaveBeenCalled();
+    expect(routeReplyMock).toHaveBeenCalledTimes(1);
+    expect(routeReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "feishu",
+        to: "chat:oc_feishu_chat_1",
+      }),
+    );
+
+    const sendingResult = await messageSending!(
+      {
+        to: "chat:oc_feishu_chat_1",
+        content: "normal reply",
+        metadata: {
+          threadId: undefined,
+          kind: "final",
+          sessionKey: feishuSessionKey,
+        },
+      },
+      {
+        channelId: "feishu",
+        accountId: "main",
+        conversationId: "chat:oc_feishu_chat_1",
+      },
+    );
+    expect(sendingResult).toMatchObject({ cancel: true });
+
+    const bridgeSendResult = await messageSending!(
+      {
+        to: "chat:oc_feishu_chat_1",
+        content: "bridge reply",
+        metadata: { threadId: undefined },
+      },
+      {
+        channelId: "feishu",
+        accountId: "main",
+        conversationId: "chat:oc_feishu_chat_1",
+      },
+    );
+    expect(bridgeSendResult).toEqual({});
+
+    await command!.handler({
+      channel: "feishu",
+      isAuthorizedSender: true,
+      commandBody: "/ceo off",
+      args: "off",
+      config: {},
+      to: "user:ou_sender_1",
+      from: "feishu:ou_sender_1",
+      senderId: "ou_sender_1",
+      accountId: "main",
+      sessionKey: feishuSessionKey,
+    });
+
+    await messageReceived!(
+      {
+        from: "feishu:ou_sender_1",
+        content: "daily",
+        metadata: {
+          to: "chat:oc_feishu_chat_1",
+          senderId: "ou_sender_1",
+          sessionKey: feishuSessionKey,
+        },
+      },
+      {
+        channelId: "feishu",
+        accountId: "main",
+        conversationId: "chat:oc_feishu_chat_1",
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("supports natural-language ceo mode switching in feishu p2p", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          request_id: "manual-daily-003",
+          run_id: "run-feishu-natural-1",
+          overdue_tasks_count: 0,
+          stale_tasks_count: 0,
+        }),
+        {
+          status: 200,
+          headers: { "x-request-id": "manual-daily-003" },
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getMessageReceivedHook } = createApiStub({
+      pluginConfig: {
+        mvpBaseUrl: "http://localhost:8787",
+        mvpApiToken: "token",
+        defaultTenantId: "tenant_a",
+      },
+    });
+    const messageReceived = getMessageReceivedHook();
+    const feishuSessionKey = "agent:main:feishu:direct:ou_sender_2";
+    expect(messageReceived).toBeTruthy();
+
+    await messageReceived!(
+      {
+        from: "feishu:ou_sender_2",
+        content: "请帮我打开 CEO 模式",
+        metadata: {
+          to: "chat:oc_feishu_chat_2",
+          senderId: "ou_sender_2",
+          sessionKey: feishuSessionKey,
+        },
+      },
+      {
+        channelId: "feishu",
+        accountId: "main",
+        conversationId: "chat:oc_feishu_chat_2",
+      },
+    );
+
+    expect(routeReplyMock).toHaveBeenCalledTimes(1);
+    expect(routeReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "feishu",
+        to: "chat:oc_feishu_chat_2",
+        payload: expect.objectContaining({
+          text: expect.stringContaining("enabled"),
+        }),
+      }),
+    );
+
+    await messageReceived!(
+      {
+        from: "feishu:ou_sender_2",
+        content: "daily",
+        metadata: {
+          to: "chat:oc_feishu_chat_2",
+          senderId: "ou_sender_2",
+          sessionKey: feishuSessionKey,
+        },
+      },
+      {
+        channelId: "feishu",
+        accountId: "main",
+        conversationId: "chat:oc_feishu_chat_2",
+      },
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await messageReceived!(
+      {
+        from: "feishu:ou_sender_2",
+        content: "能不能帮我把ceo模式关一下",
+        metadata: {
+          to: "chat:oc_feishu_chat_2",
+          senderId: "ou_sender_2",
+          sessionKey: feishuSessionKey,
+        },
+      },
+      {
+        channelId: "feishu",
+        accountId: "main",
+        conversationId: "chat:oc_feishu_chat_2",
+      },
+    );
+    expect(routeReplyMock).toHaveBeenCalledTimes(3);
+    expect(routeReplyMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        channel: "feishu",
+        to: "chat:oc_feishu_chat_2",
+        payload: expect.objectContaining({
+          text: expect.stringContaining("disabled"),
+        }),
+      }),
+    );
+
+    await messageReceived!(
+      {
+        from: "feishu:ou_sender_2",
+        content: "daily",
+        metadata: {
+          to: "chat:oc_feishu_chat_2",
+          senderId: "ou_sender_2",
+          sessionKey: feishuSessionKey,
+        },
+      },
+      {
+        channelId: "feishu",
+        accountId: "main",
+        conversationId: "chat:oc_feishu_chat_2",
       },
     );
 

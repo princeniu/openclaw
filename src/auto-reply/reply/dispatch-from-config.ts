@@ -185,6 +185,7 @@ export async function dispatchReplyFromConfig(params: {
             senderName: ctx.SenderName,
             senderUsername: ctx.SenderUsername,
             senderE164: ctx.SenderE164,
+            sessionKey: ctx.SessionKey,
           },
         },
         {
@@ -221,6 +222,7 @@ export async function dispatchReplyFromConfig(params: {
             threadId: ctx.MessageThreadId,
             mediaUrls,
             kind,
+            sessionKey: ctx.SessionKey,
           },
         },
         {

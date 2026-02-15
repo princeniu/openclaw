@@ -159,6 +159,8 @@ export type PluginCommandContext = {
   accountId?: string;
   /** Thread/topic id if available */
   messageThreadId?: number;
+  /** Session key for the active conversation */
+  sessionKey?: string;
 };
 
 /**

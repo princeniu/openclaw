@@ -484,7 +484,7 @@ async function deliverOutboundPayloadsCore(
                 channel,
                 accountId,
                 mediaUrls: payloadSummary.mediaUrls,
-                threadId: threadId ?? undefined,
+                threadId: params.threadId ?? undefined,
               },
             },
             {
