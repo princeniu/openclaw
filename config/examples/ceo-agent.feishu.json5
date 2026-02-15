@@ -1,11 +1,43 @@
 {
-  gateway: {
-    auth: {
-      mode: "token",
-      token: "${OPENCLAW_GATEWAY_TOKEN}",
+  meta: {
+    lastTouchedVersion: "2026.2.13",
+    lastTouchedAt: "2026-02-15T18:48:45.407Z",
+  },
+  wizard: {
+    lastRunAt: "2026-02-15T18:48:39.639Z",
+    lastRunVersion: "2026.2.13",
+    lastRunCommand: "doctor",
+    lastRunMode: "local",
+  },
+  auth: {
+    profiles: {
+      "openai-codex:default": {
+        provider: "openai-codex",
+        mode: "oauth",
+      },
     },
   },
-
+  agents: {
+    defaults: {
+      model: {
+        primary: "openai-codex/gpt-5.3-codex",
+      },
+      models: {
+        "openai-codex/gpt-5.3-codex": {},
+      },
+      compaction: {
+        mode: "safeguard",
+      },
+    },
+  },
+  commands: {
+    native: "auto",
+    nativeSkills: "auto",
+  },
+  hooks: {
+    enabled: true,
+    token: "${OPENCLAW_HOOKS_TOKEN}",
+  },
   channels: {
     feishu: {
       enabled: true,
@@ -19,12 +51,13 @@
       },
     },
   },
-
-  hooks: {
-    enabled: true,
-    token: "${OPENCLAW_HOOKS_TOKEN}",
+  gateway: {
+    mode: "local",
+    auth: {
+      mode: "token",
+      token: "${OPENCLAW_GATEWAY_TOKEN}",
+    },
   },
-
   plugins: {
     entries: {
       "ceo-agent-bridge": {
@@ -34,6 +67,12 @@
           mvpApiToken: "${CEO_AGENT_API_TOKEN}",
           defaultTenantId: "tenant_a",
         },
+      },
+      telegram: {
+        enabled: false,
+      },
+      feishu: {
+        enabled: true,
       },
     },
   },

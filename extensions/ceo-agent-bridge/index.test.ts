@@ -188,7 +188,7 @@ describe("ceo-agent-bridge /ceo command", () => {
       to: "telegram:12345",
       accountId: "default",
     });
-    expect(onResult.text).toContain("enabled");
+    expect(onResult.text).toContain("已开启 CEO 模式");
 
     await messageReceived!(
       {
@@ -207,6 +207,10 @@ describe("ceo-agent-bridge /ceo command", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    const routedReply = sendMessageTelegram.mock.calls[0]?.[1];
+    expect(routedReply).toContain("已完成日报心跳检查");
+    expect(routedReply).not.toContain("CEO intent");
+    expect(routedReply).not.toContain("```json");
     const sendingResult = await messageSending!(
       {
         to: "telegram:12345",
@@ -307,7 +311,7 @@ describe("ceo-agent-bridge /ceo command", () => {
       accountId: "main",
       sessionKey: feishuSessionKey,
     });
-    expect(onResult.text).toContain("enabled");
+    expect(onResult.text).toContain("已开启 CEO 模式");
 
     await messageReceived!(
       {
@@ -333,6 +337,9 @@ describe("ceo-agent-bridge /ceo command", () => {
       expect.objectContaining({
         channel: "feishu",
         to: "chat:oc_feishu_chat_1",
+        payload: expect.objectContaining({
+          text: expect.not.stringContaining("CEO intent"),
+        }),
       }),
     );
 
@@ -452,7 +459,7 @@ describe("ceo-agent-bridge /ceo command", () => {
         channel: "feishu",
         to: "chat:oc_feishu_chat_2",
         payload: expect.objectContaining({
-          text: expect.stringContaining("enabled"),
+          text: expect.stringContaining("已开启 CEO 模式"),
         }),
       }),
     );
@@ -497,7 +504,7 @@ describe("ceo-agent-bridge /ceo command", () => {
         channel: "feishu",
         to: "chat:oc_feishu_chat_2",
         payload: expect.objectContaining({
-          text: expect.stringContaining("disabled"),
+          text: expect.stringContaining("已关闭 CEO 模式"),
         }),
       }),
     );
@@ -520,5 +527,53 @@ describe("ceo-agent-bridge /ceo command", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("returns user-facing validation hint instead of debug error text", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCommand, getMessageReceivedHook, sendMessageTelegram } = createApiStub({
+      pluginConfig: {
+        mvpBaseUrl: "http://localhost:8787",
+        mvpApiToken: "token",
+        defaultTenantId: "tenant_a",
+      },
+    });
+    const command = getCommand();
+    const messageReceived = getMessageReceivedHook();
+    expect(command).toBeTruthy();
+    expect(messageReceived).toBeTruthy();
+
+    await command!.handler({
+      channel: "telegram",
+      isAuthorizedSender: true,
+      commandBody: "/ceo on",
+      args: "on",
+      config: {},
+      to: "telegram:54321",
+      accountId: "default",
+    });
+
+    await messageReceived!(
+      {
+        from: "telegram:54321",
+        content: "随便说一句",
+        metadata: {
+          to: "telegram:54321",
+        },
+      },
+      {
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:54321",
+      },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    const errorText = sendMessageTelegram.mock.calls[0]?.[1];
+    expect(errorText).toContain("我没识别出可执行的 CEO 指令");
+    expect(errorText).not.toContain("CEO routing failed");
   });
 });

@@ -1,7 +1,13 @@
 {
   meta: {
     lastTouchedVersion: "2026.2.13",
-    lastTouchedAt: "2026-02-15T06:29:12.885Z",
+    lastTouchedAt: "2026-02-15T18:14:31.604Z",
+  },
+  wizard: {
+    lastRunAt: "2026-02-15T18:14:31.581Z",
+    lastRunVersion: "2026.2.13",
+    lastRunCommand: "doctor",
+    lastRunMode: "local",
   },
   auth: {
     profiles: {

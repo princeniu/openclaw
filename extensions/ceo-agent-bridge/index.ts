@@ -222,51 +222,179 @@ function parseCeoNaturalAction(value: string): Exclude<CeoModeAction, "status"> 
   return undefined;
 }
 
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function readNumberField(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): number | undefined {
+  const value = record?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readStringField(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readArrayField(record: Record<string, unknown> | undefined, key: string): unknown[] {
+  const value = record?.[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function formatRunTime(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toISOString().replace("T", " ").replace(".000Z", " UTC");
+}
+
+function formatMeetingExtractResult(data: unknown): string {
+  const record = readRecord(data);
+  const decisions = readArrayField(record, "decisions").length;
+  const tasks = readArrayField(record, "tasks").length;
+  const meetingId = readStringField(record, "meeting_id");
+
+  if (decisions === 0 && tasks === 0) {
+    return [
+      "已完成会议纪要同步。",
+      "本次没有识别出明确的决策或待办。",
+      "建议补充更明确的句式，例如：",
+      "决策：……",
+      "待办：张三 在 2026-02-20 前完成 ……",
+    ].join("\n");
+  }
+
+  const lines = [
+    "已完成会议纪要同步。",
+    meetingId ? `会议ID：${meetingId}` : undefined,
+    `识别结果：${decisions} 条决策，${tasks} 条待办。`,
+  ].filter((line): line is string => Boolean(line));
+  return lines.join("\n");
+}
+
+function formatDailyHeartbeatResult(data: unknown): string {
+  const record = readRecord(data);
+  const overdue = readNumberField(record, "overdue_tasks_count") ?? 0;
+  const stale = readNumberField(record, "stale_tasks_count") ?? 0;
+  const newRisks = readNumberField(record, "new_risks_count") ?? 0;
+  const escalations = readNumberField(record, "escalations_count") ?? 0;
+
+  const hasIssue = overdue > 0 || stale > 0 || newRisks > 0 || escalations > 0;
+
+  const lines = [
+    "已完成日报心跳检查。",
+    `逾期任务：${overdue}，停滞任务：${stale}，新增风险：${newRisks}，升级事项：${escalations}。`,
+    hasIssue
+      ? "建议优先处理逾期与升级事项，避免风险继续扩大。"
+      : "当前状态稳定，可按既定节奏推进。",
+  ];
+  return lines.join("\n");
+}
+
+function formatWeeklyReportResult(data: unknown): string {
+  const record = readRecord(data);
+  const summary = readStringField(record, "summary");
+  const riskLevel = readStringField(record, "risk_level");
+  const runId = readStringField(record, "run_id");
+
+  const lines = ["已完成周报生成。"];
+  if (summary) {
+    lines.push(`摘要：${summary}`);
+  }
+  if (riskLevel) {
+    lines.push(`风险等级：${riskLevel}`);
+  }
+  if (runId) {
+    lines.push(`报告运行ID：${runId}`);
+  }
+  if (!summary && !riskLevel) {
+    lines.push("周报已生成成功。可继续发送“latest runs 5”查看最近任务状态。");
+  }
+  return lines.join("\n");
+}
+
+function formatLatestRunsResult(data: unknown): string {
+  const record = readRecord(data);
+  const run = readRecord(record?.run);
+
+  if (!run) {
+    return "已查询最近运行记录，但当前没有可展示的运行明细。";
+  }
+
+  const status = readStringField(run, "status") ?? "unknown";
+  const runType = readStringField(run, "run_type") ?? "unknown";
+  const runId = readStringField(run, "run_id");
+  const startedAt = formatRunTime(readStringField(run, "started_at"));
+  const finishedAt = formatRunTime(readStringField(run, "finished_at"));
+
+  const lines = [
+    "已查询最近运行记录。",
+    `最近一次：${runType}（状态：${status}）`,
+    runId ? `运行ID：${runId}` : undefined,
+    startedAt ? `开始时间：${startedAt}` : undefined,
+    finishedAt ? `结束时间：${finishedAt}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+
+  return lines.join("\n");
+}
+
 function formatChatResult(params: {
   intent: string;
   runId?: string;
   requestId?: string;
   data: unknown;
 }): string {
-  const lines: string[] = [`CEO intent: ${params.intent}`];
-  if (params.runId) {
-    lines.push(`runId: ${params.runId}`);
+  if (params.intent === "meeting_extract") {
+    return formatMeetingExtractResult(params.data);
   }
-  if (params.requestId) {
-    lines.push(`requestId: ${params.requestId}`);
+  if (params.intent === "daily_heartbeat") {
+    return formatDailyHeartbeatResult(params.data);
   }
-
-  if (params.data && typeof params.data === "object") {
-    const record = params.data as Record<string, unknown>;
-    if (typeof record.summary === "string" && record.summary.trim()) {
-      lines.push(record.summary.trim());
-    }
-    if (typeof record.risk_level === "string" && record.risk_level.trim()) {
-      lines.push(`risk: ${record.risk_level.trim()}`);
-    }
-    if (typeof record.overdue_tasks_count === "number") {
-      lines.push(`overdue: ${record.overdue_tasks_count}`);
-    }
-    if (typeof record.stale_tasks_count === "number") {
-      lines.push(`stale: ${record.stale_tasks_count}`);
-    }
-    if (typeof record.new_risks_count === "number") {
-      lines.push(`new_risks: ${record.new_risks_count}`);
-    }
-    if (typeof record.escalations_count === "number") {
-      lines.push(`escalations: ${record.escalations_count}`);
-    }
+  if (params.intent === "weekly_report") {
+    return formatWeeklyReportResult(params.data);
   }
-
-  lines.push("```json");
-  lines.push(JSON.stringify(params.data, null, 2));
-  lines.push("```");
-
-  return lines.join("\n");
+  if (params.intent === "latest_runs") {
+    return formatLatestRunsResult(params.data);
+  }
+  return "已完成请求处理。";
 }
 
 function formatChatError(code: string, error: string): string {
-  return `CEO routing failed (${code}): ${error}`;
+  if (code === "validation_error") {
+    return [
+      "我没识别出可执行的 CEO 指令。",
+      "可用示例：daily、weekly、latest runs 5、会议纪要 今天同步了客户拜访。",
+      `详情：${error}`,
+    ].join("\n");
+  }
+  if (code === "unauthorized") {
+    return "当前会话没有 CEO 权限，请联系管理员确认身份映射配置。";
+  }
+  if (code === "config_error") {
+    return "CEO 服务配置未完成，请先配置 mvpBaseUrl 和 mvpApiToken。";
+  }
+  if (code === "timeout") {
+    return "CEO 服务请求超时，请稍后重试。";
+  }
+  if (code === "network_error") {
+    return "CEO 服务连接失败，请检查网络或服务状态后重试。";
+  }
+  if (code === "upstream_error" || code === "invalid_response") {
+    return `CEO 服务暂时不可用：${error}`;
+  }
+  return `CEO 请求失败：${error}`;
 }
 
 const plugin = {
@@ -336,16 +464,16 @@ const plugin = {
           ceoModeKeys.add(modeKey);
           suppressUntilMsByModeKey.delete(modeKey);
         }
-        return "CEO mode enabled. Regular chat text will route to CEO APIs.";
+        return "已开启 CEO 模式。你可以直接发送 daily、weekly、latest runs 5 或会议纪要内容。";
       }
       if (action === "off") {
         for (const modeKey of modeKeys) {
           ceoModeKeys.delete(modeKey);
           suppressUntilMsByModeKey.delete(modeKey);
         }
-        return "CEO mode disabled. Chat is back to normal agent replies.";
+        return "已关闭 CEO 模式，当前会按普通聊天回复。";
       }
-      return isCeoModeEnabled(modeKeys) ? "CEO mode: ON" : "CEO mode: OFF";
+      return isCeoModeEnabled(modeKeys) ? "CEO 模式：已开启" : "CEO 模式：已关闭";
     };
 
     type RouteExecutionResult =
