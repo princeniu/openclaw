@@ -1,0 +1,25 @@
+{
+  meta: {
+    template: "business-module-agent",
+    version: "1.0.0",
+  },
+
+  agent: {
+    id: "finance-agent",
+    name: "Finance Agent",
+    workspace: "~/.openclaw/workspace-finance",
+    agentDir: "~/.openclaw/agents/finance-agent/agent",
+    model: "openai/gpt-5",
+    tools: {
+      profile: "coding",
+    },
+  },
+
+  binding: {
+    agentId: "finance-agent",
+    match: {
+      channel: "feishu",
+      accountId: "main",
+    },
+  },
+}

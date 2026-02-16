@@ -1,0 +1,81 @@
+{
+  meta: {
+    lastTouchedVersion: "2026.2.13",
+  },
+
+  gateway: {
+    auth: {
+      mode: "token",
+      token: "${OPENCLAW_GATEWAY_TOKEN}",
+    },
+  },
+
+  hooks: {
+    enabled: true,
+    token: "${OPENCLAW_HOOKS_TOKEN}",
+    allowedAgentIds: ["ceo-agent", "general-agent"],
+  },
+
+  agents: {
+    list: [
+      {
+        id: "general-agent",
+        default: true,
+        name: "General Assistant",
+        workspace: "~/.openclaw/workspace-general",
+        agentDir: "~/.openclaw/agents/general-agent/agent",
+      },
+      {
+        id: "ceo-agent",
+        name: "CEO Agent",
+        workspace: "~/.openclaw/workspace-ceo",
+        agentDir: "~/.openclaw/agents/ceo-agent/agent",
+      },
+    ],
+  },
+
+  bindings: [
+    { agentId: "ceo-agent", match: { channel: "feishu", accountId: "main" } },
+    { agentId: "ceo-agent", match: { channel: "telegram", accountId: "main" } },
+    { agentId: "general-agent", match: { channel: "feishu" } },
+    { agentId: "general-agent", match: { channel: "telegram" } },
+  ],
+
+  channels: {
+    feishu: {
+      enabled: true,
+      dmPolicy: "pairing",
+      accounts: {
+        main: {
+          appId: "${FEISHU_APP_ID}",
+          appSecret: "${FEISHU_APP_SECRET}",
+          botName: "CEO Agent",
+        },
+      },
+    },
+    telegram: {
+      enabled: true,
+      dmPolicy: "pairing",
+      botToken: "${TELEGRAM_BOT_TOKEN}",
+      groupPolicy: "allowlist",
+      groups: {
+        "*": { requireMention: true },
+      },
+    },
+  },
+
+  plugins: {
+    entries: {
+      "ceo-agent-bridge": {
+        enabled: true,
+        config: {
+          mvpBaseUrl: "http://127.0.0.1:8000",
+          mvpApiToken: "${CEO_AGENT_API_TOKEN}",
+          defaultTenantId: "tenant_a",
+        },
+      },
+      feishu: { enabled: true },
+      telegram: { enabled: true },
+    },
+  },
+}

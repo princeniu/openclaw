@@ -70,6 +70,47 @@ describe("ceo-agent-bridge intent router", () => {
     });
   });
 
+  test("routes weekly with real series when provided", () => {
+    const result = routeCeoIntent({
+      messageText: "weekly",
+      tenantId: "tenant-a",
+      sessionKey: "telegram:u1",
+      weeklyInputPolicy: "real-or-default",
+      realWeeklySeries: {
+        sales: [120, 130],
+        costs: [70, 65],
+        cashflow: [50, 65],
+      },
+      now: new Date("2026-02-15T08:30:00.000Z"),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("expected ok result");
+    }
+    expect(result.route.payload).toMatchObject({
+      sales: [120, 130],
+      costs: [70, 65],
+      cashflow: [50, 65],
+    });
+  });
+
+  test("returns validation error when weekly real-required has no real data", () => {
+    const result = routeCeoIntent({
+      messageText: "周报",
+      tenantId: "tenant-a",
+      sessionKey: "telegram:u1",
+      weeklyInputPolicy: "real-required",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("expected validation error");
+    }
+    expect(result.error.code).toBe("validation_error");
+    expect(result.error.message).toContain("real metrics");
+  });
+
   test("routes latest runs keyword to latest runs endpoint", () => {
     const result = routeCeoIntent({
       messageText: "latest runs 8",

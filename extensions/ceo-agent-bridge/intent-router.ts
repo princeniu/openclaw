@@ -1,3 +1,9 @@
+import {
+  resolveWeeklyInput,
+  type WeeklyInputPolicyMode,
+  type WeeklySeries,
+} from "./weekly-input-policy.js";
+
 export type CeoRouteMethod = "GET" | "POST";
 
 export type CeoIntentName = "meeting_extract" | "daily_heartbeat" | "weekly_report" | "latest_runs";
@@ -17,6 +23,8 @@ export type CeoIntentInput = {
   requestId?: string;
   timezone?: string;
   now?: Date;
+  weeklyInputPolicy?: WeeklyInputPolicyMode;
+  realWeeklySeries?: WeeklySeries;
 };
 
 export type CeoIntentError = {
@@ -36,7 +44,6 @@ export type CeoIntentResult =
 
 const DEFAULT_LIMIT = 20;
 const DEFAULT_STALE_HOURS = 24;
-const DEFAULT_WEEKLY_SERIES = [1, 1] as const;
 
 function validationError(message: string): CeoIntentResult {
   return {
@@ -76,6 +83,19 @@ function isWeeklyCommand(text: string): boolean {
 
 function isLatestRunsCommand(text: string): boolean {
   return /查询运行/.test(text) || /^latest\s+runs?(?:\s|$)/i.test(text);
+}
+
+export function isCeoIntentMessage(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    isMeetingCommand(normalized) ||
+    isDailyCommand(normalized) ||
+    isWeeklyCommand(normalized) ||
+    isLatestRunsCommand(normalized)
+  );
 }
 
 function extractLatestRunsLimit(text: string): number {
@@ -138,6 +158,13 @@ function routeDaily(input: CeoIntentInput): CeoIntentResult {
 function routeWeekly(input: CeoIntentInput): CeoIntentResult {
   const now = input.now ?? new Date();
   const periodStart = shiftDays(now, -6);
+  const weeklyInput = resolveWeeklyInput({
+    mode: input.weeklyInputPolicy ?? "real-or-default",
+    realSeries: input.realWeeklySeries,
+  });
+  if (!weeklyInput.ok) {
+    return validationError(weeklyInput.error);
+  }
   return {
     ok: true,
     route: {
@@ -148,9 +175,9 @@ function routeWeekly(input: CeoIntentInput): CeoIntentResult {
         tenant_id: input.tenantId,
         period_start: dateStamp(periodStart),
         period_end: dateStamp(now),
-        sales: [...DEFAULT_WEEKLY_SERIES],
-        costs: [...DEFAULT_WEEKLY_SERIES],
-        cashflow: [...DEFAULT_WEEKLY_SERIES],
+        sales: [...weeklyInput.series.sales],
+        costs: [...weeklyInput.series.costs],
+        cashflow: [...weeklyInput.series.cashflow],
       },
     },
   };

@@ -1,0 +1,50 @@
+{
+  gateway: {
+    auth: {
+      mode: "token",
+      token: "${OPENCLAW_GATEWAY_TOKEN}",
+    },
+  },
+
+  tools: {
+    profile: "full",
+  },
+
+  agents: {
+    list: [
+      {
+        id: "general-agent",
+        default: true,
+        name: "General Assistant",
+        workspace: "~/.openclaw/workspace-general",
+        agentDir: "~/.openclaw/agents/general-agent/agent",
+        tools: {
+          profile: "full",
+        },
+      },
+      {
+        id: "ceo-agent",
+        name: "CEO Agent",
+        workspace: "~/.openclaw/workspace-ceo",
+        agentDir: "~/.openclaw/agents/ceo-agent/agent",
+        tools: {
+          profile: "coding",
+          deny: ["gateway", "sessions_spawn"],
+        },
+      },
+    ],
+  },
+
+  plugins: {
+    entries: {
+      "ceo-agent-bridge": {
+        enabled: true,
+        config: {
+          mvpBaseUrl: "${CEO_AGENT_API_BASE_URL}",
+          mvpApiToken: "${CEO_AGENT_API_TOKEN}",
+          defaultTenantId: "tenant_a",
+        },
+      },
+    },
+  },
+}

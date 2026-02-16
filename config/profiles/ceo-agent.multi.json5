@@ -1,0 +1,60 @@
+{
+  gateway: {
+    port: 18789,
+    auth: {
+      mode: "token",
+      token: "${OPENCLAW_GATEWAY_TOKEN}",
+    },
+  },
+
+  hooks: {
+    enabled: true,
+    token: "${OPENCLAW_HOOKS_TOKEN}",
+    path: "/hooks",
+    allowedAgentIds: ["ceo-agent", "general-agent"],
+  },
+
+  agents: {
+    list: [
+      {
+        id: "general-agent",
+        default: true,
+        name: "General Assistant",
+        workspace: "~/.openclaw/workspace-general",
+        agentDir: "~/.openclaw/agents/general-agent/agent",
+      },
+      {
+        id: "ceo-agent",
+        name: "CEO Agent",
+        workspace: "~/.openclaw/workspace-ceo",
+        agentDir: "~/.openclaw/agents/ceo-agent/agent",
+      },
+    ],
+  },
+
+  bindings: [
+    { agentId: "ceo-agent", match: { channel: "feishu", accountId: "main" } },
+    { agentId: "ceo-agent", match: { channel: "telegram", accountId: "main" } },
+  ],
+
+  plugins: {
+    enabled: true,
+    entries: {
+      "ceo-agent-bridge": {
+        enabled: true,
+        config: {
+          mvpBaseUrl: "${CEO_AGENT_API_BASE_URL}",
+          mvpApiToken: "${CEO_AGENT_API_TOKEN}",
+          requestTimeoutMs: 8000,
+          defaultTenantId: "tenant_a",
+          identityFallbackMode: "deny",
+        },
+      },
+    },
+  },
+
+  channels: {
+    telegram: { enabled: false, dmPolicy: "pairing" },
+    feishu: { enabled: false, dmPolicy: "pairing" },
+  },
+}
