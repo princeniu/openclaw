@@ -6,10 +6,28 @@ import plugin from "./index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const routeReplyMock = vi.hoisted(() => vi.fn(async () => ({ ok: true, messageId: "1" })));
+const runMetricsSyncMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    files_total: 2,
+    files_processed: 2,
+    rows_loaded: 4,
+    rows_skipped: 0,
+    date_start: "2026-02-01",
+    date_end: "2026-02-07",
+    dry_run: true,
+  })),
+);
 
 vi.mock("../../src/auto-reply/reply/route-reply.js", () => ({
   routeReply: routeReplyMock,
 }));
+vi.mock("./metrics-sync.js", async () => {
+  const actual = await vi.importActual<typeof import("./metrics-sync.js")>("./metrics-sync.js");
+  return {
+    ...actual,
+    runMetricsSync: runMetricsSyncMock,
+  };
+});
 
 describe("ceo-agent-bridge plugin scaffold", () => {
   test("has valid manifest and register entry", async () => {
@@ -138,6 +156,7 @@ describe("ceo-agent-bridge /ceo command", () => {
     vi.restoreAllMocks();
     globalThis.fetch = originalFetch;
     routeReplyMock.mockClear();
+    runMetricsSyncMock.mockClear();
   });
 
   test("registers /ceo command", () => {
@@ -145,6 +164,97 @@ describe("ceo-agent-bridge /ceo command", () => {
     const command = getCommand();
     expect(command?.name).toBe("ceo");
     expect(command?.acceptsArgs).toBe(true);
+  });
+
+  test("supports /ceo help surface", async () => {
+    const { getCommand } = createApiStub();
+    const command = getCommand();
+    expect(command).toBeTruthy();
+
+    const result = await command!.handler({
+      channel: "telegram",
+      isAuthorizedSender: true,
+      commandBody: "/ceo help",
+      args: "help",
+      config: {},
+      to: "telegram:1",
+      accountId: "default",
+    });
+
+    expect(result.text).toContain("/ceo on");
+    expect(result.text).toContain("/ceo help");
+    expect(result.text).toContain("daily");
+    expect(result.text).toContain("周报");
+  });
+
+  test("returns usage hint with help guidance on invalid /ceo args", async () => {
+    const { getCommand } = createApiStub();
+    const command = getCommand();
+    expect(command).toBeTruthy();
+
+    const result = await command!.handler({
+      channel: "telegram",
+      isAuthorizedSender: true,
+      commandBody: "/ceo xyz",
+      args: "xyz",
+      config: {},
+      to: "telegram:1",
+      accountId: "default",
+    });
+
+    expect(result.text).toContain("/ceo help");
+  });
+
+  test("routes sync metrics command while ceo mode is on", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCommand, getMessageReceivedHook, sendMessageTelegram } = createApiStub({
+      pluginConfig: {
+        mvpBaseUrl: "http://localhost:8787",
+        mvpApiToken: "token",
+        defaultTenantId: "tenant_a",
+      },
+    });
+    const command = getCommand();
+    const messageReceived = getMessageReceivedHook();
+    expect(command).toBeTruthy();
+    expect(messageReceived).toBeTruthy();
+
+    await command!.handler({
+      channel: "telegram",
+      isAuthorizedSender: true,
+      commandBody: "/ceo on",
+      args: "on",
+      config: {},
+      to: "telegram:777",
+      accountId: "default",
+    });
+
+    await messageReceived!(
+      {
+        from: "telegram:777",
+        content: "sync metrics ./fixtures/metrics --dry-run",
+        metadata: { to: "telegram:777" },
+      },
+      {
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:777",
+      },
+    );
+
+    expect(runMetricsSyncMock).toHaveBeenCalledTimes(1);
+    expect(runMetricsSyncMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inputDir: "./fixtures/metrics",
+        tenantId: "tenant_a",
+        dryRun: true,
+      }),
+    );
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    expect(sendMessageTelegram.mock.calls[0]?.[1]).toContain("导入行数：4");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test("routes inbound telegram text only when /ceo mode is on", async () => {
@@ -264,6 +374,70 @@ describe("ceo-agent-bridge /ceo command", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("localizes weekly summary to product-facing Chinese wording", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          request_id: "manual-weekly-001",
+          run_id: "run-weekly-1",
+          summary: "Weekly trend: sales 1 (+0.0%), costs 1 (+0.0%), cashflow 1.",
+          risk_level: "low",
+        }),
+        {
+          status: 200,
+          headers: { "x-request-id": "manual-weekly-001" },
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCommand, getMessageReceivedHook, sendMessageTelegram } = createApiStub({
+      pluginConfig: {
+        mvpBaseUrl: "http://localhost:8787",
+        mvpApiToken: "token",
+        defaultTenantId: "tenant_a",
+      },
+    });
+    const command = getCommand();
+    const messageReceived = getMessageReceivedHook();
+    expect(command).toBeTruthy();
+    expect(messageReceived).toBeTruthy();
+
+    await command!.handler({
+      channel: "telegram",
+      isAuthorizedSender: true,
+      commandBody: "/ceo on",
+      args: "on",
+      config: {},
+      to: "telegram:70001",
+      accountId: "default",
+    });
+
+    await messageReceived!(
+      {
+        from: "telegram:70001",
+        content: "weekly",
+        metadata: {
+          to: "telegram:70001",
+        },
+      },
+      {
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:70001",
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    const reply = sendMessageTelegram.mock.calls[0]?.[1];
+    expect(reply).toContain("摘要：本周趋势");
+    expect(reply).toContain("销售 1（+0.0%）");
+    expect(reply).toContain("成本 1（+0.0%）");
+    expect(reply).toContain("现金流 1");
+    expect(reply).not.toContain("Weekly trend:");
   });
 
   test("routes inbound feishu text only when /ceo mode is on", async () => {
@@ -529,7 +703,7 @@ describe("ceo-agent-bridge /ceo command", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  test("returns user-facing validation hint instead of debug error text", async () => {
+  test("falls through for non-ceo messages when ceo mode is on", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -571,9 +745,6 @@ describe("ceo-agent-bridge /ceo command", () => {
     );
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
-    const errorText = sendMessageTelegram.mock.calls[0]?.[1];
-    expect(errorText).toContain("我没识别出可执行的 CEO 指令");
-    expect(errorText).not.toContain("CEO routing failed");
+    expect(sendMessageTelegram).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,15 @@
 import type { GatewayRequestHandlerOptions, OpenClawPluginApi } from "openclaw/plugin-sdk";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+import { buildCeoHelpText } from "./help-text.js";
 import { resolveChannelIdentity, type IdentityRecord } from "./identity-map.js";
-import { routeCeoIntent } from "./intent-router.js";
+import { isCeoIntentMessage, routeCeoIntent } from "./intent-router.js";
+import {
+  formatMetricsSyncSummary,
+  parseMetricsSyncCommand,
+  runMetricsSync,
+} from "./metrics-sync.js";
 import { createMvpClient } from "./mvp-client.js";
 import { buildBridgeTelemetryLog } from "./telemetry.js";
 
@@ -148,8 +156,9 @@ function readMetadataString(
 }
 
 type CeoModeAction = "on" | "off" | "status";
+type CeoSlashAction = CeoModeAction | "help";
 
-function parseCeoSlashAction(value: string): CeoModeAction | undefined {
+function parseCeoSlashAction(value: string): CeoSlashAction | undefined {
   const normalized = value.trim().toLowerCase();
   if (normalized === "on" || normalized === "enable") {
     return "on";
@@ -159,6 +168,9 @@ function parseCeoSlashAction(value: string): CeoModeAction | undefined {
   }
   if (normalized === "status" || normalized.length === 0) {
     return "status";
+  }
+  if (normalized === "help" || normalized === "h" || normalized === "?") {
+    return "help";
   }
   return undefined;
 }
@@ -260,6 +272,22 @@ function formatRunTime(value: string | undefined): string | undefined {
   return date.toISOString().replace("T", " ").replace(".000Z", " UTC");
 }
 
+function localizeWeeklySummary(summary: string | undefined): string | undefined {
+  if (!summary) {
+    return undefined;
+  }
+
+  const trendMatch = summary.match(
+    /^Weekly trend:\s*sales\s+([+-]?\d+(?:\.\d+)?)\s+\(([^)]+)\),\s*costs\s+([+-]?\d+(?:\.\d+)?)\s+\(([^)]+)\),\s*cashflow\s+([+-]?\d+(?:\.\d+)?)\.?$/i,
+  );
+  if (!trendMatch) {
+    return summary;
+  }
+
+  const [, sales, salesDelta, costs, costsDelta, cashflow] = trendMatch;
+  return `本周趋势：销售 ${sales}（${salesDelta}），成本 ${costs}（${costsDelta}），现金流 ${cashflow}。`;
+}
+
 function formatMeetingExtractResult(data: unknown): string {
   const record = readRecord(data);
   const decisions = readArrayField(record, "decisions").length;
@@ -306,12 +334,13 @@ function formatDailyHeartbeatResult(data: unknown): string {
 function formatWeeklyReportResult(data: unknown): string {
   const record = readRecord(data);
   const summary = readStringField(record, "summary");
+  const localizedSummary = localizeWeeklySummary(summary);
   const riskLevel = readStringField(record, "risk_level");
   const runId = readStringField(record, "run_id");
 
   const lines = ["已完成周报生成。"];
-  if (summary) {
-    lines.push(`摘要：${summary}`);
+  if (localizedSummary) {
+    lines.push(`摘要：${localizedSummary}`);
   }
   if (riskLevel) {
     lines.push(`风险等级：${riskLevel}`);
@@ -397,6 +426,9 @@ function formatChatError(code: string, error: string): string {
   return `CEO 请求失败：${error}`;
 }
 
+const pluginDirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(pluginDirname, "../../..");
+
 const plugin = {
   id: "ceo-agent-bridge",
   name: "CEO Agent Bridge",
@@ -413,6 +445,11 @@ const plugin = {
     const mvpApiToken = readString(pluginConfig, "mvpApiToken");
     const requestTimeoutMs = readNumber(pluginConfig, "requestTimeoutMs");
     const maxRetries = readNumber(pluginConfig, "maxRetries");
+    const metricsSyncScriptPath =
+      readString(pluginConfig, "metricsSyncScriptPath") ??
+      path.join(projectRoot, "scripts", "ceo_metrics_sync.py");
+    const metricsSyncDbPath =
+      readString(pluginConfig, "metricsSyncDbPath") ?? path.join(projectRoot, "ceo_agent.db");
 
     const defaultTenantId = readString(pluginConfig, "defaultTenantId") ?? "default";
     const allowlist = readStringArray(pluginConfig, "identityAllowlist");
@@ -464,7 +501,7 @@ const plugin = {
           ceoModeKeys.add(modeKey);
           suppressUntilMsByModeKey.delete(modeKey);
         }
-        return "已开启 CEO 模式。你可以直接发送 daily、weekly、latest runs 5 或会议纪要内容。";
+        return "已开启 CEO 模式。你可以直接发送 daily、weekly、latest runs 5、sync metrics <目录> 或会议纪要内容。";
       }
       if (action === "off") {
         for (const modeKey of modeKeys) {
@@ -716,7 +753,12 @@ const plugin = {
         }
         if (!parsedAction) {
           return {
-            text: "Usage: /ceo on | /ceo off | /ceo status",
+            text: "Usage: /ceo on | /ceo off | /ceo status | /ceo help",
+          };
+        }
+        if (parsedAction === "help") {
+          return {
+            text: buildCeoHelpText(),
           };
         }
         return {
@@ -816,6 +858,87 @@ const plugin = {
       }
 
       if (messageText.startsWith("/")) {
+        return;
+      }
+
+      const metricsSyncCommand = parseMetricsSyncCommand(messageText);
+      if (metricsSyncCommand.matched) {
+        for (const modeKey of modeKeys) {
+          startSuppressionWindow(modeKey);
+        }
+
+        if (metricsSyncCommand.error || !metricsSyncCommand.inputDir) {
+          await sendBridgeReply({
+            channel,
+            conversationId,
+            text: metricsSyncCommand.error ?? "sync metrics 命令参数无效",
+            accountId: ctx.accountId,
+            threadId,
+          });
+          return;
+        }
+
+        const peerId = channel === "feishu" ? event.from : conversationId;
+        const identity = resolveChannelIdentity(
+          {
+            channel,
+            peerId,
+            threadId,
+          },
+          {
+            defaultTenantId,
+            staticMap,
+            allowlist,
+            envOverrideJson,
+            fallbackMode,
+          },
+        );
+        if (!identity.allowed) {
+          await sendBridgeReply({
+            channel,
+            conversationId,
+            text: "当前身份未授权执行指标同步，请联系管理员配置身份映射。",
+            accountId: ctx.accountId,
+            threadId,
+          });
+          return;
+        }
+
+        try {
+          const summary = await runMetricsSync({
+            scriptPath: metricsSyncScriptPath,
+            inputDir: metricsSyncCommand.inputDir,
+            tenantId: identity.tenantId,
+            dbPath: metricsSyncDbPath,
+            dryRun: metricsSyncCommand.dryRun,
+          });
+          await sendBridgeReply({
+            channel,
+            conversationId,
+            text: formatMetricsSyncSummary(summary),
+            accountId: ctx.accountId,
+            threadId,
+            sessionKey: identity.sessionKey,
+          });
+        } catch (error) {
+          for (const modeKey of modeKeys) {
+            suppressUntilMsByModeKey.delete(modeKey);
+          }
+          api.logger.error(
+            `ceo-agent-bridge metrics sync failed channel=${channel} error=${String(error)}`,
+          );
+          await sendBridgeReply({
+            channel,
+            conversationId,
+            text: "指标同步失败，请检查目录路径、文件格式和运行日志。",
+            accountId: ctx.accountId,
+            threadId,
+          });
+        }
+        return;
+      }
+
+      if (!isCeoIntentMessage(messageText)) {
         return;
       }
 
