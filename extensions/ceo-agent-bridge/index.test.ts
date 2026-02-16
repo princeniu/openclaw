@@ -39,7 +39,7 @@ describe("ceo-agent-bridge plugin scaffold", () => {
 
     const manifest = JSON.parse(manifestRaw) as {
       id?: string;
-      configSchema?: { type?: string };
+      configSchema?: { type?: string; properties?: Record<string, unknown> };
     };
     const pkg = JSON.parse(packageRaw) as {
       name?: string;
@@ -49,6 +49,15 @@ describe("ceo-agent-bridge plugin scaffold", () => {
 
     expect(manifest.id).toBe("ceo-agent-bridge");
     expect(manifest.configSchema?.type).toBe("object");
+    expect(
+      Object.prototype.hasOwnProperty.call(manifest.configSchema?.properties ?? {}, "ceoAgentId"),
+    ).toBe(true);
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        manifest.configSchema?.properties ?? {},
+        "enforceAgentScope",
+      ),
+    ).toBe(true);
     expect(pkg.type).toBe("module");
     expect(pkg.openclaw?.extensions).toContain("./index.ts");
 

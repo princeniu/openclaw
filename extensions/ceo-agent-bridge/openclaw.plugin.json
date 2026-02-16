@@ -7,7 +7,16 @@
       "mvpBaseUrl": { "type": "string", "minLength": 1 },
       "mvpApiToken": { "type": "string", "minLength": 1 },
       "requestTimeoutMs": { "type": "number", "minimum": 1000 },
-      "defaultTenantId": { "type": "string" }
+      "maxRetries": { "type": "number", "minimum": 0 },
+      "defaultTenantId": { "type": "string" },
+      "metricsSyncScriptPath": { "type": "string" },
+      "metricsSyncDbPath": { "type": "string" },
+      "identityAllowlist": { "type": "array", "items": { "type": "string" } },
+      "identityMap": { "type": "object" },
+      "identityEnvOverrideJson": { "type": "string" },
+      "identityFallbackMode": { "type": "string", "enum": ["allow", "deny"] },
+      "ceoAgentId": { "type": "string" },
+      "enforceAgentScope": { "type": "boolean" }
     },
     "required": ["mvpBaseUrl", "mvpApiToken"]
   }
