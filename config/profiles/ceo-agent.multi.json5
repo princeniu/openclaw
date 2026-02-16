@@ -48,6 +48,8 @@
           requestTimeoutMs: 8000,
           defaultTenantId: "tenant_a",
           identityFallbackMode: "deny",
+          ceoAgentId: "ceo-agent",
+          enforceAgentScope: true,
         },
       },
     },

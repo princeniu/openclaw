@@ -88,11 +88,11 @@ type RegisteredCommand = {
 
 type MessageReceivedHandler = (
   event: { from: string; content: string; metadata?: Record<string, unknown> },
-  ctx: { channelId: string; accountId?: string; conversationId?: string },
+  ctx: { channelId: string; accountId?: string; conversationId?: string; sessionKey?: string },
 ) => Promise<void> | void;
 type MessageSendingHandler = (
   event: { to: string; content: string; metadata?: Record<string, unknown> },
-  ctx: { channelId: string; accountId?: string; conversationId?: string },
+  ctx: { channelId: string; accountId?: string; conversationId?: string; sessionKey?: string },
 ) =>
   | Promise<{ cancel?: boolean; content?: string } | void>
   | { cancel?: boolean; content?: string }
@@ -701,6 +701,124 @@ describe("ceo-agent-bridge /ceo command", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not enable ceo mode for non-ceo agent sessions when scope is enforced", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCommand, getMessageReceivedHook, sendMessageTelegram } = createApiStub({
+      pluginConfig: {
+        mvpBaseUrl: "http://localhost:8787",
+        mvpApiToken: "token",
+        defaultTenantId: "tenant_a",
+        enforceAgentScope: true,
+        ceoAgentId: "ceo-agent",
+      },
+    });
+    const command = getCommand();
+    const messageReceived = getMessageReceivedHook();
+    expect(command).toBeTruthy();
+    expect(messageReceived).toBeTruthy();
+
+    const commandResult = await command!.handler({
+      channel: "telegram",
+      isAuthorizedSender: true,
+      commandBody: "/ceo on",
+      args: "on",
+      config: {},
+      to: "telegram:scope-blocked",
+      accountId: "default",
+      sessionKey: "agent:general-agent:main",
+    });
+    expect(commandResult.text).toContain("未进入 CEO agent");
+
+    await messageReceived!(
+      {
+        from: "telegram:scope-blocked",
+        content: "daily",
+        metadata: {
+          to: "telegram:scope-blocked",
+          sessionKey: "agent:general-agent:main",
+        },
+      },
+      {
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:scope-blocked",
+        sessionKey: "agent:general-agent:main",
+      },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sendMessageTelegram).not.toHaveBeenCalled();
+  });
+
+  test("routes ceo intent for ceo-agent sessions when scope is enforced", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          request_id: "manual-scope-001",
+          run_id: "run-scope-1",
+          overdue_tasks_count: 0,
+          stale_tasks_count: 0,
+          new_risks_count: 0,
+          escalations_count: 0,
+        }),
+        {
+          status: 200,
+          headers: { "x-request-id": "manual-scope-001" },
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCommand, getMessageReceivedHook, sendMessageTelegram } = createApiStub({
+      pluginConfig: {
+        mvpBaseUrl: "http://localhost:8787",
+        mvpApiToken: "token",
+        defaultTenantId: "tenant_a",
+        enforceAgentScope: true,
+        ceoAgentId: "ceo-agent",
+      },
+    });
+    const command = getCommand();
+    const messageReceived = getMessageReceivedHook();
+    expect(command).toBeTruthy();
+    expect(messageReceived).toBeTruthy();
+
+    const commandResult = await command!.handler({
+      channel: "telegram",
+      isAuthorizedSender: true,
+      commandBody: "/ceo on",
+      args: "on",
+      config: {},
+      to: "telegram:scope-ceo",
+      accountId: "default",
+      sessionKey: "agent:ceo-agent:main",
+    });
+    expect(commandResult.text).toContain("已开启 CEO 模式");
+
+    await messageReceived!(
+      {
+        from: "telegram:scope-ceo",
+        content: "daily",
+        metadata: {
+          to: "telegram:scope-ceo",
+          sessionKey: "agent:ceo-agent:main",
+        },
+      },
+      {
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:scope-ceo",
+        sessionKey: "agent:ceo-agent:main",
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    expect(sendMessageTelegram.mock.calls[0]?.[1]).toContain("已完成日报心跳检查");
   });
 
   test("falls through for non-ceo messages when ceo mode is on", async () => {

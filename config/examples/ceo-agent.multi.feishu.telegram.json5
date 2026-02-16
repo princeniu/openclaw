@@ -72,6 +72,8 @@
           mvpBaseUrl: "http://127.0.0.1:8000",
           mvpApiToken: "${CEO_AGENT_API_TOKEN}",
           defaultTenantId: "tenant_a",
+          ceoAgentId: "ceo-agent",
+          enforceAgentScope: true,
         },
       },
       feishu: { enabled: true },

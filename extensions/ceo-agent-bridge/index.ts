@@ -29,6 +29,11 @@ function readNumber(config: Record<string, unknown>, key: string): number | unde
   return undefined;
 }
 
+function readBoolean(config: Record<string, unknown>, key: string): boolean | undefined {
+  const value = config[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function readStringArray(config: Record<string, unknown>, key: string): string[] {
   const value = config[key];
   if (!Array.isArray(value)) {
@@ -92,12 +97,38 @@ function parseThreadIdNumber(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function extractAgentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
+  if (!sessionKey) {
+    return undefined;
+  }
+  const trimmed = sessionKey.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const match = /^agent:([^:]+):/i.exec(trimmed);
+  return match?.[1]?.trim() ? match[1].trim() : undefined;
+}
+
+function resolveAgentIdFromSessionCandidates(
+  sessionCandidates: Array<string | undefined>,
+): string | undefined {
+  for (const candidate of sessionCandidates) {
+    const agentId = extractAgentIdFromSessionKey(candidate);
+    if (agentId) {
+      return agentId;
+    }
+  }
+  return undefined;
+}
+
 function buildModeKey(params: {
+  agentId?: string;
   channel: string;
   accountId?: string;
   conversationId?: string;
   threadId?: string;
 }): string | null {
+  const agentId = params.agentId?.trim().toLowerCase() ?? "";
   const channel = params.channel.trim().toLowerCase();
   const conversationId = params.conversationId?.trim().toLowerCase();
   if (!channel || !conversationId) {
@@ -105,25 +136,30 @@ function buildModeKey(params: {
   }
   const accountId = params.accountId?.trim().toLowerCase() ?? "";
   const threadId = params.threadId?.trim().toLowerCase() ?? "";
-  return `${channel}|${accountId}|${conversationId}|${threadId}`;
+  return `${agentId}|${channel}|${accountId}|${conversationId}|${threadId}`;
 }
 
 function buildModeKeys(params: {
+  agentId?: string;
   channel: string;
   accountId?: string;
   threadId?: string;
   conversationIds: Array<string | undefined>;
 }): string[] {
   const keys = new Set<string>();
+  const agentIdCandidates = params.agentId ? [params.agentId, undefined] : [undefined];
   for (const conversationId of params.conversationIds) {
-    const key = buildModeKey({
-      channel: params.channel,
-      accountId: params.accountId,
-      conversationId,
-      threadId: params.threadId,
-    });
-    if (key) {
-      keys.add(key);
+    for (const agentId of agentIdCandidates) {
+      const key = buildModeKey({
+        agentId,
+        channel: params.channel,
+        accountId: params.accountId,
+        conversationId,
+        threadId: params.threadId,
+      });
+      if (key) {
+        keys.add(key);
+      }
     }
   }
   return [...keys];
@@ -458,6 +494,8 @@ const plugin = {
       readString(pluginConfig, "identityEnvOverrideJson") ?? process.env.OPENCLAW_CEO_IDENTITY_MAP;
     const fallbackMode =
       readString(pluginConfig, "identityFallbackMode") === "deny" ? "deny" : "allow";
+    const ceoAgentId = readString(pluginConfig, "ceoAgentId") ?? "ceo-agent";
+    const enforceAgentScope = readBoolean(pluginConfig, "enforceAgentScope") ?? false;
 
     const client =
       mvpBaseUrl && mvpApiToken
@@ -494,6 +532,16 @@ const plugin = {
 
     const modeKeysWithinSuppressionWindow = (modeKeys: string[]): string[] =>
       modeKeys.filter((modeKey) => isWithinSuppressionWindow(modeKey));
+
+    const isAllowedAgentScope = (agentId: string | undefined): boolean => {
+      if (!enforceAgentScope) {
+        return true;
+      }
+      if (!agentId) {
+        return true;
+      }
+      return agentId === ceoAgentId;
+    };
 
     const applyModeAction = (modeKeys: string[], action: CeoModeAction): string => {
       if (action === "on") {
@@ -732,8 +780,16 @@ const plugin = {
       description: "Toggle CEO routing mode: /ceo on|off|status",
       acceptsArgs: true,
       handler: (ctx) => {
+        const commandAgentId = resolveAgentIdFromSessionCandidates([ctx.sessionKey]);
+        if (!isAllowedAgentScope(commandAgentId)) {
+          return {
+            text: `当前会话属于 ${commandAgentId}，未进入 CEO agent（${ceoAgentId}），保持普通模式。`,
+          };
+        }
+
         const parsedAction = parseCeoSlashAction(ctx.args ?? "status");
         const modeKeys = buildModeKeys({
+          agentId: commandAgentId,
           channel: ctx.channel,
           accountId: ctx.accountId,
           threadId: normalizeThreadId(ctx.messageThreadId),
@@ -772,12 +828,22 @@ const plugin = {
         event.metadata && typeof event.metadata === "object"
           ? (event.metadata as Record<string, unknown>)
           : undefined;
+      const ctxRecord = readRecord(ctx);
       const sendingKind = readMetadataString(metadata, "kind");
       const sendingSessionKey = readMetadataString(metadata, "sessionKey");
+      const contextSessionKey = readStringField(ctxRecord, "sessionKey");
+      const scopedAgentId = resolveAgentIdFromSessionCandidates([
+        sendingSessionKey,
+        contextSessionKey,
+      ]);
+      if (!isAllowedAgentScope(scopedAgentId)) {
+        return {};
+      }
       if (!sendingKind && !sendingSessionKey) {
         return {};
       }
       const modeKeys = buildModeKeys({
+        agentId: scopedAgentId,
         channel: ctx.channelId,
         accountId: ctx.accountId,
         threadId: normalizeThreadId(metadata?.threadId),
@@ -810,9 +876,18 @@ const plugin = {
         event.metadata && typeof event.metadata === "object"
           ? (event.metadata as Record<string, unknown>)
           : undefined;
+      const ctxRecord = readRecord(ctx);
+      const scopedAgentId = resolveAgentIdFromSessionCandidates([
+        readMetadataString(metadata, "sessionKey"),
+        readStringField(ctxRecord, "sessionKey"),
+      ]);
+      if (!isAllowedAgentScope(scopedAgentId)) {
+        return;
+      }
       const conversationId = ctx.conversationId ?? readMetadataString(metadata, "to") ?? event.from;
       const threadId = normalizeThreadId(metadata?.threadId);
       const modeKeys = buildModeKeys({
+        agentId: scopedAgentId,
         channel,
         accountId: ctx.accountId,
         threadId,
@@ -1032,6 +1107,19 @@ const plugin = {
           typeof params?.requestId === "string" && params.requestId.trim()
             ? params.requestId.trim()
             : undefined;
+        const sessionKey =
+          typeof params?.sessionKey === "string" && params.sessionKey.trim()
+            ? params.sessionKey.trim()
+            : undefined;
+        const scopedAgentId = resolveAgentIdFromSessionCandidates([sessionKey]);
+        if (!isAllowedAgentScope(scopedAgentId)) {
+          respond(false, {
+            code: "agent_scope_mismatch",
+            status: 403,
+            error: `session is bound to ${scopedAgentId}, expected ${ceoAgentId}`,
+          });
+          return;
+        }
         const execution = await executeRoutedIntent({
           messageText,
           channel,
