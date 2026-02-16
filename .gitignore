@@ -80,6 +80,9 @@ USER.md
 # local tooling
 .serena/
 
+# Temporary backup files
+config/examples/*.bak*
+
 # Agent credentials and memory (NEVER COMMIT)
 /memory/
 .agent/*.json
