@@ -92,16 +92,29 @@ type RegisteredCommand = {
     accountId?: string;
     messageThreadId?: number;
     sessionKey?: string;
+    agentId?: string;
   }) => Promise<{ text?: string }> | { text?: string };
 };
 
 type MessageReceivedHandler = (
   event: { from: string; content: string; metadata?: Record<string, unknown> },
-  ctx: { channelId: string; accountId?: string; conversationId?: string; sessionKey?: string },
+  ctx: {
+    channelId: string;
+    accountId?: string;
+    conversationId?: string;
+    sessionKey?: string;
+    agentId?: string;
+  },
 ) => Promise<void> | void;
 type MessageSendingHandler = (
   event: { to: string; content: string; metadata?: Record<string, unknown> },
-  ctx: { channelId: string; accountId?: string; conversationId?: string; sessionKey?: string },
+  ctx: {
+    channelId: string;
+    accountId?: string;
+    conversationId?: string;
+    sessionKey?: string;
+    agentId?: string;
+  },
 ) =>
   | Promise<{ cancel?: boolean; content?: string } | void>
   | { cancel?: boolean; content?: string }
@@ -828,6 +841,71 @@ describe("ceo-agent-bridge /ceo command", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
     expect(sendMessageTelegram.mock.calls[0]?.[1]).toContain("已完成日报心跳检查");
+  });
+
+  test("routes ceo intent when agentId is ceo-agent even without sessionKey", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          request_id: "manual-scope-002",
+          run_id: "run-scope-2",
+          overdue_tasks_count: 0,
+          stale_tasks_count: 0,
+          new_risks_count: 0,
+          escalations_count: 0,
+        }),
+        {
+          status: 200,
+          headers: { "x-request-id": "manual-scope-002" },
+        },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getCommand, getMessageReceivedHook, sendMessageTelegram } = createApiStub({
+      pluginConfig: {
+        mvpBaseUrl: "http://localhost:8787",
+        mvpApiToken: "token",
+        defaultTenantId: "tenant_a",
+        enforceAgentScope: true,
+        ceoAgentId: "ceo-agent",
+      },
+    });
+    const command = getCommand();
+    const messageReceived = getMessageReceivedHook();
+    expect(command).toBeTruthy();
+    expect(messageReceived).toBeTruthy();
+
+    const commandResult = await command!.handler({
+      channel: "telegram",
+      isAuthorizedSender: true,
+      commandBody: "/ceo on",
+      args: "on",
+      config: {},
+      to: "telegram:scope-ceo-agentid",
+      accountId: "default",
+      agentId: "ceo-agent",
+    });
+    expect(commandResult.text).toContain("已开启 CEO 模式");
+
+    await messageReceived!(
+      {
+        from: "telegram:scope-ceo-agentid",
+        content: "daily",
+        metadata: {
+          to: "telegram:scope-ceo-agentid",
+        },
+      },
+      {
+        channelId: "telegram",
+        accountId: "default",
+        conversationId: "telegram:scope-ceo-agentid",
+        agentId: "ceo-agent",
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
   });
 
   test("falls through for non-ceo messages when ceo mode is on", async () => {

@@ -97,6 +97,10 @@ function parseThreadIdNumber(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function normalizeAgentId(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function extractAgentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
   if (!sessionKey) {
     return undefined;
@@ -119,6 +123,16 @@ function resolveAgentIdFromSessionCandidates(
     }
   }
   return undefined;
+}
+
+function resolveScopedAgentId(params: {
+  explicitAgentId?: unknown;
+  sessionCandidates: Array<string | undefined>;
+}): string | undefined {
+  return (
+    normalizeAgentId(params.explicitAgentId) ??
+    resolveAgentIdFromSessionCandidates(params.sessionCandidates)
+  );
 }
 
 function buildModeKey(params: {
@@ -780,7 +794,11 @@ const plugin = {
       description: "Toggle CEO routing mode: /ceo on|off|status",
       acceptsArgs: true,
       handler: (ctx) => {
-        const commandAgentId = resolveAgentIdFromSessionCandidates([ctx.sessionKey]);
+        const commandCtxRecord = readRecord(ctx);
+        const commandAgentId = resolveScopedAgentId({
+          explicitAgentId: readStringField(commandCtxRecord, "agentId"),
+          sessionCandidates: [ctx.sessionKey],
+        });
         if (!isAllowedAgentScope(commandAgentId)) {
           return {
             text: `当前会话属于 ${commandAgentId}，未进入 CEO agent（${ceoAgentId}），保持普通模式。`,
@@ -832,10 +850,10 @@ const plugin = {
       const sendingKind = readMetadataString(metadata, "kind");
       const sendingSessionKey = readMetadataString(metadata, "sessionKey");
       const contextSessionKey = readStringField(ctxRecord, "sessionKey");
-      const scopedAgentId = resolveAgentIdFromSessionCandidates([
-        sendingSessionKey,
-        contextSessionKey,
-      ]);
+      const scopedAgentId = resolveScopedAgentId({
+        explicitAgentId: readStringField(ctxRecord, "agentId"),
+        sessionCandidates: [sendingSessionKey, contextSessionKey],
+      });
       if (!isAllowedAgentScope(scopedAgentId)) {
         return {};
       }
@@ -877,10 +895,13 @@ const plugin = {
           ? (event.metadata as Record<string, unknown>)
           : undefined;
       const ctxRecord = readRecord(ctx);
-      const scopedAgentId = resolveAgentIdFromSessionCandidates([
-        readMetadataString(metadata, "sessionKey"),
-        readStringField(ctxRecord, "sessionKey"),
-      ]);
+      const scopedAgentId = resolveScopedAgentId({
+        explicitAgentId: readStringField(ctxRecord, "agentId"),
+        sessionCandidates: [
+          readMetadataString(metadata, "sessionKey"),
+          readStringField(ctxRecord, "sessionKey"),
+        ],
+      });
       if (!isAllowedAgentScope(scopedAgentId)) {
         return;
       }
@@ -1111,7 +1132,10 @@ const plugin = {
           typeof params?.sessionKey === "string" && params.sessionKey.trim()
             ? params.sessionKey.trim()
             : undefined;
-        const scopedAgentId = resolveAgentIdFromSessionCandidates([sessionKey]);
+        const scopedAgentId = resolveScopedAgentId({
+          explicitAgentId: params?.agentId,
+          sessionCandidates: [sessionKey],
+        });
         if (!isAllowedAgentScope(scopedAgentId)) {
           respond(false, {
             code: "agent_scope_mismatch",
