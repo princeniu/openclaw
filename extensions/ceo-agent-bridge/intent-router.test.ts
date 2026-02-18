@@ -177,4 +177,27 @@ describe("ceo-agent-bridge intent router", () => {
     }
     expect(result.error.message).toContain("Unsupported command");
   });
+
+  test("uses internal workflow endpoints for migrated management intents", () => {
+    const commandSamples = [
+      "会议纪要 决策：推进试点",
+      "schedule analyze",
+      "crm risks",
+      "supply risks",
+      "proactive brief",
+    ];
+
+    for (const messageText of commandSamples) {
+      const result = routeCeoIntent({
+        messageText,
+        tenantId: "tenant-a",
+        sessionKey: "telegram:u1",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error("expected routed intent");
+      }
+      expect(result.route.endpoint.startsWith("/ceo/workflows/")).toBe(true);
+    }
+  });
 });
