@@ -560,6 +560,39 @@ function formatProactiveBriefResult(data: unknown): string {
   return lines.join("\n");
 }
 
+function formatSupplyRisksResult(data: unknown): string {
+  const record = readRecord(data);
+  const signalCount = readNumberField(record, "signal_count");
+  const riskScore = readNumberField(record, "risk_score");
+  const signals = readArrayField(record, "signals")
+    .map((item) => readRecord(item))
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .slice(0, 3);
+  const recommendedActions = readArrayField(record, "recommended_actions").filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+
+  const signalSummary = signals
+    .map((item) => {
+      const type = readStringField(item, "signal_type") ?? "unknown";
+      const severity = readStringField(item, "severity") ?? "unknown";
+      return `${type}(${severity})`;
+    })
+    .join("、");
+
+  const lines = [
+    "已完成供应链风险扫描。",
+    signalCount !== undefined ? `信号数：${signalCount}` : undefined,
+    riskScore !== undefined ? `风险分：${riskScore}` : undefined,
+    signalSummary ? `风险信号：${signalSummary}` : undefined,
+    recommendedActions.length
+      ? `建议动作：${recommendedActions.slice(0, 2).join("；")}`
+      : undefined,
+  ].filter((line): line is string => Boolean(line));
+
+  return lines.join("\n");
+}
+
 function formatChatResult(params: {
   intent: string;
   runId?: string;
@@ -586,6 +619,9 @@ function formatChatResult(params: {
   }
   if (params.intent === "proactive_brief") {
     return formatProactiveBriefResult(params.data);
+  }
+  if (params.intent === "supply_risks") {
+    return formatSupplyRisksResult(params.data);
   }
   return "已完成请求处理。";
 }
