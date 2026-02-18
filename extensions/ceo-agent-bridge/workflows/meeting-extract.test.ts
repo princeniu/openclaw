@@ -29,6 +29,11 @@ describe("meeting extract workflow", () => {
       owner: "李雷",
       due_at: "2026-02-25",
     });
+    expect(result.data.post_meeting_card).toMatchObject({
+      card_type: "meeting_dispatch",
+      meeting_id: "m_001",
+      task_count: 2,
+    });
   });
 
   test("supports transcript stream and incremental extraction", async () => {

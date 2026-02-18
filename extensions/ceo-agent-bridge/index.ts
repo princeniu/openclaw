@@ -369,6 +369,7 @@ function formatMeetingExtractResult(data: unknown): string {
   const decisions = readArrayField(record, "decisions").length;
   const tasks = readArrayField(record, "tasks").length;
   const meetingId = readStringField(record, "meeting_id");
+  const postMeetingCard = readRecord(record?.post_meeting_card);
 
   if (decisions === 0 && tasks === 0) {
     return [
@@ -384,6 +385,7 @@ function formatMeetingExtractResult(data: unknown): string {
     "已完成会议纪要同步。",
     meetingId ? `会议ID：${meetingId}` : undefined,
     `识别结果：${decisions} 条决策，${tasks} 条待办。`,
+    postMeetingCard ? "已推送“确认并派发”卡片。请在卡片中确认后执行派发。" : undefined,
   ].filter((line): line is string => Boolean(line));
   return lines.join("\n");
 }
@@ -586,6 +588,12 @@ function formatChatResult(params: {
     return formatProactiveBriefResult(params.data);
   }
   return "已完成请求处理。";
+}
+
+function extractMeetingPostCard(data: unknown): Record<string, unknown> | undefined {
+  const record = readRecord(data);
+  const card = readRecord(record?.post_meeting_card);
+  return card;
 }
 
 function formatChatError(code: string, error: string): string {
@@ -1019,6 +1027,7 @@ const plugin = {
       channel: string;
       conversationId: string;
       text: string;
+      card?: Record<string, unknown>;
       accountId?: string;
       threadId?: string;
       sessionKey?: string;
@@ -1032,19 +1041,37 @@ const plugin = {
       }
 
       const { routeReply } = await import("../../src/auto-reply/reply/route-reply.js");
-      const routed = await routeReply({
-        payload: { text: params.text },
-        channel: params.channel as never,
-        to: params.conversationId,
-        accountId: params.accountId,
-        threadId: params.threadId,
-        sessionKey: params.sessionKey,
-        cfg: api.config,
-        mirror: false,
-      });
+      if (params.text) {
+        const routed = await routeReply({
+          payload: { text: params.text },
+          channel: params.channel as never,
+          to: params.conversationId,
+          accountId: params.accountId,
+          threadId: params.threadId,
+          sessionKey: params.sessionKey,
+          cfg: api.config,
+          mirror: false,
+        });
 
-      if (!routed.ok) {
-        throw new Error(routed.error ?? `Failed to route reply to channel=${params.channel}`);
+        if (!routed.ok) {
+          throw new Error(routed.error ?? `Failed to route reply to channel=${params.channel}`);
+        }
+      }
+
+      if (params.channel === "feishu" && params.card) {
+        const cardRouted = await routeReply({
+          payload: { card: params.card },
+          channel: params.channel as never,
+          to: params.conversationId,
+          accountId: params.accountId,
+          threadId: params.threadId,
+          sessionKey: params.sessionKey,
+          cfg: api.config,
+          mirror: false,
+        });
+        if (!cardRouted.ok) {
+          throw new Error(cardRouted.error ?? "Failed to route meeting post card");
+        }
       }
     };
 
@@ -1316,12 +1343,17 @@ const plugin = {
             data: execution.data,
           })
         : formatChatError(execution.code, execution.error);
+      const card =
+        execution.ok && execution.route.intent === "meeting_extract"
+          ? extractMeetingPostCard(execution.data)
+          : undefined;
 
       try {
         await sendBridgeReply({
           channel,
           conversationId,
           text,
+          card,
           accountId: ctx.accountId,
           threadId,
           sessionKey: execution.ok ? execution.identity.sessionKey : undefined,
