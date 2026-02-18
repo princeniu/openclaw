@@ -57,4 +57,31 @@ describe("meeting extract workflow", () => {
       tasks_added: 1,
     });
   });
+
+  test("routes owner/date conflicts to pending confirmation queue", async () => {
+    const result = await runMeetingExtractWorkflow(context, {
+      meeting_id: "m_003",
+      raw_text:
+        "待办：张三 在 2026-02-25 前完成 签约材料\n待办：李四 在 2026-02-25 前完成 签约材料\n待办：王五 在 2026-02-26 前完成 预算复核\n待办：王五 在 2026-02-27 前完成 预算复核\n待办：赵六 在 2026-02-28 前完成 客户回访",
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.data.task_count).toBe(1);
+    expect(result.data.tasks[0]).toMatchObject({
+      owner: "赵六",
+      due_at: "2026-02-28",
+    });
+    expect(result.data.pending_confirmations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          conflict_type: "owner_conflict",
+          description: "签约材料",
+        }),
+        expect.objectContaining({
+          conflict_type: "date_conflict",
+          description: "预算复核",
+        }),
+      ]),
+    );
+  });
 });

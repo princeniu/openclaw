@@ -2,6 +2,7 @@ import { buildDryRunSuccessResult, type WorkflowContext, type WorkflowResult } f
 
 type MeetingTask = {
   text: string;
+  description: string;
   owner?: string;
   due_at?: string;
 };
@@ -12,6 +13,12 @@ type IncrementalUpdate = {
   tasks_added: number;
   total_decisions: number;
   total_tasks: number;
+};
+
+type PendingConfirmation = {
+  conflict_type: "owner_conflict" | "date_conflict";
+  description: string;
+  candidates: MeetingTask[];
 };
 
 function toLines(text: string): string[] {
@@ -35,6 +42,18 @@ function extractOwner(text: string): string | undefined {
   return enMatch?.[1];
 }
 
+function extractTaskDescription(text: string): string {
+  const zhRemoved = text.replace(/^([^\s在:：]+)\s+在\s+\d{4}-\d{2}-\d{2}\s+前?完成\s*/i, "");
+  if (zhRemoved !== text) {
+    return zhRemoved.trim();
+  }
+  const enRemoved = text.replace(/^([A-Za-z][\w-]*)\s+by\s+\d{4}-\d{2}-\d{2}\s+/i, "");
+  if (enRemoved !== text) {
+    return enRemoved.trim();
+  }
+  return text.trim();
+}
+
 function extractMeetingSignals(text: string): { decisions: string[]; tasks: MeetingTask[] } {
   const decisions: string[] = [];
   const tasks: MeetingTask[] = [];
@@ -50,6 +69,7 @@ function extractMeetingSignals(text: string): { decisions: string[]; tasks: Meet
       const taskText = taskMatch[1].trim();
       tasks.push({
         text: taskText,
+        description: extractTaskDescription(taskText),
         owner: extractOwner(taskText),
         due_at: extractDueDate(taskText),
       });
@@ -101,6 +121,32 @@ function readTranscriptChunks(payload: Record<string, unknown>): {
   };
 }
 
+function upsertPendingConfirmation(
+  pending: PendingConfirmation[],
+  conflictType: PendingConfirmation["conflict_type"],
+  description: string,
+  candidates: MeetingTask[],
+): void {
+  let target = pending.find(
+    (item) => item.conflict_type === conflictType && item.description === description,
+  );
+  if (!target) {
+    target = {
+      conflict_type: conflictType,
+      description,
+      candidates: [],
+    };
+    pending.push(target);
+  }
+
+  for (const candidate of candidates) {
+    const exists = target.candidates.some((item) => item.text === candidate.text);
+    if (!exists) {
+      target.candidates.push(candidate);
+    }
+  }
+}
+
 export async function runMeetingExtractWorkflow(
   context: WorkflowContext,
   payload: Record<string, unknown> = {},
@@ -116,6 +162,7 @@ export async function runMeetingExtractWorkflow(
     task_count: number;
     decisions: string[];
     tasks: MeetingTask[];
+    pending_confirmations: PendingConfirmation[];
     incremental_updates: IncrementalUpdate[];
   }>
 > {
@@ -123,14 +170,17 @@ export async function runMeetingExtractWorkflow(
   const transcript = readTranscriptChunks(payload);
   const seenDecision = new Set<string>();
   const seenTask = new Set<string>();
+  const conflictedDescriptions = new Set<string>();
   const decisions: string[] = [];
   const tasks: MeetingTask[] = [];
+  const confirmedTaskByDescription = new Map<string, MeetingTask>();
+  const pendingConfirmations: PendingConfirmation[] = [];
   const incrementalUpdates: IncrementalUpdate[] = [];
 
   transcript.chunks.forEach((chunk, chunkIndex) => {
     const extracted = extractMeetingSignals(chunk);
-    let decisionsAdded = 0;
-    let tasksAdded = 0;
+    const beforeDecisions = decisions.length;
+    const beforeTasks = tasks.length;
 
     for (const decision of extracted.decisions) {
       if (seenDecision.has(decision)) {
@@ -138,7 +188,6 @@ export async function runMeetingExtractWorkflow(
       }
       seenDecision.add(decision);
       decisions.push(decision);
-      decisionsAdded += 1;
     }
 
     for (const task of extracted.tasks) {
@@ -146,14 +195,57 @@ export async function runMeetingExtractWorkflow(
         continue;
       }
       seenTask.add(task.text);
+      const existing = confirmedTaskByDescription.get(task.description);
+
+      if (existing) {
+        const ownerConflict =
+          Boolean(existing.owner) && Boolean(task.owner) && existing.owner !== task.owner;
+        const dateConflict =
+          Boolean(existing.due_at) && Boolean(task.due_at) && existing.due_at !== task.due_at;
+
+        if (ownerConflict || dateConflict) {
+          conflictedDescriptions.add(task.description);
+          confirmedTaskByDescription.delete(task.description);
+          const keepTasks = tasks.filter((item) => item.description !== task.description);
+          tasks.length = 0;
+          tasks.push(...keepTasks);
+
+          if (ownerConflict) {
+            upsertPendingConfirmation(pendingConfirmations, "owner_conflict", task.description, [
+              existing,
+              task,
+            ]);
+          }
+          if (dateConflict) {
+            upsertPendingConfirmation(pendingConfirmations, "date_conflict", task.description, [
+              existing,
+              task,
+            ]);
+          }
+        }
+        continue;
+      }
+
+      if (conflictedDescriptions.has(task.description)) {
+        for (const conflictType of ["owner_conflict", "date_conflict"] as const) {
+          const hasConflict = pendingConfirmations.some(
+            (item) => item.description === task.description && item.conflict_type === conflictType,
+          );
+          if (hasConflict) {
+            upsertPendingConfirmation(pendingConfirmations, conflictType, task.description, [task]);
+          }
+        }
+        continue;
+      }
+
+      confirmedTaskByDescription.set(task.description, task);
       tasks.push(task);
-      tasksAdded += 1;
     }
 
     incrementalUpdates.push({
       chunk_index: chunkIndex,
-      decisions_added: decisionsAdded,
-      tasks_added: tasksAdded,
+      decisions_added: decisions.length - beforeDecisions,
+      tasks_added: tasks.length - beforeTasks,
       total_decisions: decisions.length,
       total_tasks: tasks.length,
     });
@@ -168,6 +260,7 @@ export async function runMeetingExtractWorkflow(
     task_count: tasks.length,
     decisions,
     tasks,
+    pending_confirmations: pendingConfirmations,
     incremental_updates: incrementalUpdates,
   });
 }
