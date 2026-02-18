@@ -70,6 +70,26 @@ describe("ceo-agent-bridge intent router", () => {
     });
   });
 
+  test("routes schedule analyze command to internal workflow endpoint", () => {
+    const result = routeCeoIntent({
+      messageText: "schedule analyze",
+      tenantId: "tenant-a",
+      sessionKey: "telegram:u1",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("expected ok result");
+    }
+    expect(result.route.intent).toBe("schedule_analyze");
+    expect(result.route.endpoint).toBe("/ceo/workflows/schedule-analyze");
+    expect(result.route.method).toBe("POST");
+    expect(result.route.payload).toMatchObject({
+      tenant_id: "tenant-a",
+      deep_work_blocks: 0,
+    });
+  });
+
   test("routes weekly with real series when provided", () => {
     const result = routeCeoIntent({
       messageText: "weekly",

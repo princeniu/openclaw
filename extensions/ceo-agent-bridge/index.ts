@@ -2,6 +2,7 @@ import type { GatewayRequestHandlerOptions, OpenClawPluginApi } from "openclaw/p
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+import type { WeeklySeries } from "./weekly-input-policy.js";
 import { buildCeoHelpText } from "./help-text.js";
 import { resolveChannelIdentity, type IdentityRecord } from "./identity-map.js";
 import { isCeoIntentMessage, routeCeoIntent } from "./intent-router.js";
@@ -12,6 +13,11 @@ import {
 } from "./metrics-sync.js";
 import { createMvpClient } from "./mvp-client.js";
 import { buildBridgeTelemetryLog } from "./telemetry.js";
+import {
+  runWorkflowByName,
+  type CeoWorkflowName,
+  type WorkflowContext,
+} from "./workflows/index.js";
 
 function readString(config: Record<string, unknown>, key: string): string | undefined {
   const value = config[key];
@@ -311,6 +317,25 @@ function readArrayField(record: Record<string, unknown> | undefined, key: string
   return Array.isArray(value) ? value : [];
 }
 
+function readFiniteNumberArray(
+  record: Record<string, unknown> | undefined,
+  key: string,
+  minLength: number,
+): number[] | undefined {
+  const values = readArrayField(record, key);
+  if (values.length < minLength) {
+    return undefined;
+  }
+  const numbers: number[] = [];
+  for (const item of values) {
+    if (typeof item !== "number" || !Number.isFinite(item)) {
+      return undefined;
+    }
+    numbers.push(item);
+  }
+  return numbers.length >= minLength ? numbers : undefined;
+}
+
 function formatRunTime(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -429,6 +454,31 @@ function formatLatestRunsResult(data: unknown): string {
   return lines.join("\n");
 }
 
+function formatScheduleAnalyzeResult(data: unknown): string {
+  const record = readRecord(data);
+  const report = readRecord(record?.schedule_risk_report) ?? readRecord(record?.data);
+  if (!report) {
+    return "已完成日程分析，但当前没有可展示的风险结果。";
+  }
+
+  const riskLevel = readStringField(report, "risk_level") ?? "unknown";
+  const hits = readArrayField(report, "hits").filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+  const actionItems = readArrayField(report, "action_items").filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+
+  const lines = [
+    "已完成日程分析。",
+    `风险等级：${riskLevel}`,
+    hits.length ? `命中规则：${hits.join("、")}` : undefined,
+    actionItems.length ? `建议动作：${actionItems.slice(0, 3).join("；")}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+
+  return lines.join("\n");
+}
+
 function formatChatResult(params: {
   intent: string;
   runId?: string;
@@ -446,6 +496,9 @@ function formatChatResult(params: {
   }
   if (params.intent === "latest_runs") {
     return formatLatestRunsResult(params.data);
+  }
+  if (params.intent === "schedule_analyze") {
+    return formatScheduleAnalyzeResult(params.data);
   }
   return "已完成请求处理。";
 }
@@ -479,6 +532,18 @@ function formatChatError(code: string, error: string): string {
 const pluginDirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(pluginDirname, "../../..");
 
+const INTERNAL_ENDPOINT_TO_WORKFLOW: Record<string, CeoWorkflowName> = {
+  "/ceo/workflows/meeting-extract": "meeting-extract",
+  "/ceo/workflows/schedule-analyze": "schedule-analyze",
+  "/ceo/workflows/crm-risk-scan": "crm-risk-scan",
+  "/ceo/workflows/supply-risk-scan": "supply-risk-scan",
+  "/ceo/workflows/proactive-brief-generate": "proactive-brief-generate",
+};
+
+function resolveInternalWorkflow(endpoint: string): CeoWorkflowName | undefined {
+  return INTERNAL_ENDPOINT_TO_WORKFLOW[endpoint];
+}
+
 const plugin = {
   id: "ceo-agent-bridge",
   name: "CEO Agent Bridge",
@@ -495,6 +560,8 @@ const plugin = {
     const mvpApiToken = readString(pluginConfig, "mvpApiToken");
     const requestTimeoutMs = readNumber(pluginConfig, "requestTimeoutMs");
     const maxRetries = readNumber(pluginConfig, "maxRetries");
+    const weeklyRealMetricsPreferred =
+      readBoolean(pluginConfig, "weeklyRealMetricsPreferred") ?? false;
     const metricsSyncScriptPath =
       readString(pluginConfig, "metricsSyncScriptPath") ??
       path.join(projectRoot, "scripts", "ceo_metrics_sync.py");
@@ -643,13 +710,63 @@ const plugin = {
         };
       }
 
-      const routeResult = routeCeoIntent({
+      let routeResult = routeCeoIntent({
         messageText: params.messageText,
         tenantId: identity.tenantId,
         sessionKey: identity.sessionKey,
         requestId: params.requestId,
         timezone: params.timezone,
       });
+
+      if (
+        weeklyRealMetricsPreferred &&
+        client &&
+        routeResult.ok &&
+        routeResult.route.intent === "weekly_report"
+      ) {
+        const metricsResult = await client.execute(
+          {
+            endpoint: "/api/v1/metrics/series/latest",
+            method: "GET",
+            query: {
+              tenant_id: identity.tenantId,
+              limit: 2,
+            },
+          },
+          {
+            requestId: params.requestId,
+            sessionId: identity.sessionKey,
+          },
+        );
+        if (metricsResult.ok) {
+          const metricsPayload =
+            metricsResult.data && typeof metricsResult.data === "object"
+              ? (metricsResult.data as Record<string, unknown>)
+              : undefined;
+          const sales = readFiniteNumberArray(metricsPayload, "sales", 2);
+          const costs = readFiniteNumberArray(metricsPayload, "costs", 2);
+          const cashflow = readFiniteNumberArray(metricsPayload, "cashflow", 2);
+          if (sales && costs && cashflow) {
+            const realWeeklySeries: WeeklySeries = {
+              sales,
+              costs,
+              cashflow,
+            };
+            const routeWithRealMetrics = routeCeoIntent({
+              messageText: params.messageText,
+              tenantId: identity.tenantId,
+              sessionKey: identity.sessionKey,
+              requestId: params.requestId,
+              timezone: params.timezone,
+              weeklyInputPolicy: "real-or-default",
+              realWeeklySeries,
+            });
+            if (routeWithRealMetrics.ok) {
+              routeResult = routeWithRealMetrics;
+            }
+          }
+        }
+      }
 
       if (!routeResult.ok) {
         api.logger.warn(
@@ -669,6 +786,63 @@ const plugin = {
           ok: false,
           code: routeResult.error.code,
           error: routeResult.error.message,
+        };
+      }
+
+      const internalWorkflow = resolveInternalWorkflow(routeResult.route.endpoint);
+      if (internalWorkflow) {
+        const requestId = params.requestId ?? `req-${Date.now()}`;
+        const runId = `${internalWorkflow}-${Date.now()}`;
+        const context: WorkflowContext = {
+          tenantId: identity.tenantId,
+          requestId,
+          sessionId: identity.sessionKey,
+          runId,
+          nowIso: new Date().toISOString(),
+        };
+        const workflowPayload = routeResult.route.payload ?? {};
+        const workflowResult = await runWorkflowByName(internalWorkflow, context, workflowPayload);
+        const statusCode = workflowResult.status === "failed" ? 500 : 200;
+
+        api.logger.info(
+          JSON.stringify(
+            buildBridgeTelemetryLog({
+              channel: params.channel,
+              peerId: params.peerId,
+              sessionKey: identity.sessionKey,
+              requestId: workflowResult.request_id,
+              runId: workflowResult.run_id,
+              latencyMs: Date.now() - startedAt,
+              status: workflowResult.status === "failed" ? "error" : "success",
+              intent: routeResult.route.intent,
+              endpoint: routeResult.route.endpoint,
+              errorCode: workflowResult.status === "failed" ? "workflow_error" : undefined,
+            }),
+          ),
+        );
+
+        if (workflowResult.status === "failed") {
+          return {
+            ok: false,
+            code: "upstream_error",
+            status: statusCode,
+            error: workflowResult.errors.join("; ") || "internal workflow failed",
+          };
+        }
+
+        return {
+          ok: true,
+          route: routeResult.route,
+          status: statusCode,
+          requestId: workflowResult.request_id,
+          runId: workflowResult.run_id,
+          data: workflowResult.data,
+          identity: {
+            key: identity.identityKey,
+            source: identity.source,
+            tenantId: identity.tenantId,
+            sessionKey: identity.sessionKey,
+          },
         };
       }
 

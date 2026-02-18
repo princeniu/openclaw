@@ -6,7 +6,15 @@ import {
 
 export type CeoRouteMethod = "GET" | "POST";
 
-export type CeoIntentName = "meeting_extract" | "daily_heartbeat" | "weekly_report" | "latest_runs";
+export type CeoIntentName =
+  | "meeting_extract"
+  | "daily_heartbeat"
+  | "weekly_report"
+  | "latest_runs"
+  | "schedule_analyze"
+  | "crm_risks"
+  | "supply_risks"
+  | "proactive_brief";
 
 export type CeoBridgeRoute = {
   intent: CeoIntentName;
@@ -85,6 +93,22 @@ function isLatestRunsCommand(text: string): boolean {
   return /查询运行/.test(text) || /^latest\s+runs?(?:\s|$)/i.test(text);
 }
 
+function isScheduleCommand(text: string): boolean {
+  return /日程分析/.test(text) || /^schedule\s+analy[sz]e?(?:\s|$)/i.test(text);
+}
+
+function isCrmCommand(text: string): boolean {
+  return /客户风险/.test(text) || /^crm\s+risks?(?:\s|$)/i.test(text);
+}
+
+function isSupplyCommand(text: string): boolean {
+  return /供应链风险/.test(text) || /^supply\s+risks?(?:\s|$)/i.test(text);
+}
+
+function isProactiveCommand(text: string): boolean {
+  return /主动简报/.test(text) || /^proactive\s+brief(?:\s|$)/i.test(text);
+}
+
 export function isCeoIntentMessage(text: string): boolean {
   const normalized = text.trim();
   if (!normalized) {
@@ -94,7 +118,11 @@ export function isCeoIntentMessage(text: string): boolean {
     isMeetingCommand(normalized) ||
     isDailyCommand(normalized) ||
     isWeeklyCommand(normalized) ||
-    isLatestRunsCommand(normalized)
+    isLatestRunsCommand(normalized) ||
+    isScheduleCommand(normalized) ||
+    isCrmCommand(normalized) ||
+    isSupplyCommand(normalized) ||
+    isProactiveCommand(normalized)
   );
 }
 
@@ -198,6 +226,79 @@ function routeLatestRuns(input: CeoIntentInput, normalized: string): CeoIntentRe
   };
 }
 
+function routeSchedule(input: CeoIntentInput): CeoIntentResult {
+  return {
+    ok: true,
+    route: {
+      intent: "schedule_analyze",
+      endpoint: "/ceo/workflows/schedule-analyze",
+      method: "POST",
+      payload: {
+        tenant_id: input.tenantId,
+        daily_meeting_hours: [7, 5, 4, 3, 2],
+        strategic_time_flags: [false, false, false, true, true],
+        deep_work_blocks: 0,
+      },
+    },
+  };
+}
+
+function routeCrm(input: CeoIntentInput): CeoIntentResult {
+  return {
+    ok: true,
+    route: {
+      intent: "crm_risks",
+      endpoint: "/ceo/workflows/crm-risk-scan",
+      method: "POST",
+      payload: {
+        tenant_id: input.tenantId,
+        customers: [
+          {
+            customer_id: "demo_a",
+            days_since_contact: 35,
+            overdue_days: 0,
+            high_value: false,
+          },
+          {
+            customer_id: "demo_b",
+            days_since_contact: 12,
+            overdue_days: 18,
+            high_value: true,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function routeSupply(input: CeoIntentInput): CeoIntentResult {
+  return {
+    ok: true,
+    route: {
+      intent: "supply_risks",
+      endpoint: "/ceo/workflows/supply-risk-scan",
+      method: "POST",
+      payload: {
+        tenant_id: input.tenantId,
+      },
+    },
+  };
+}
+
+function routeProactive(input: CeoIntentInput): CeoIntentResult {
+  return {
+    ok: true,
+    route: {
+      intent: "proactive_brief",
+      endpoint: "/ceo/workflows/proactive-brief-generate",
+      method: "POST",
+      payload: {
+        tenant_id: input.tenantId,
+      },
+    },
+  };
+}
+
 export function routeCeoIntent(input: CeoIntentInput): CeoIntentResult {
   const normalized = input.messageText.trim();
   if (!normalized) {
@@ -218,6 +319,22 @@ export function routeCeoIntent(input: CeoIntentInput): CeoIntentResult {
 
   if (isLatestRunsCommand(normalized)) {
     return routeLatestRuns(input, normalized);
+  }
+
+  if (isScheduleCommand(normalized)) {
+    return routeSchedule(input);
+  }
+
+  if (isCrmCommand(normalized)) {
+    return routeCrm(input);
+  }
+
+  if (isSupplyCommand(normalized)) {
+    return routeSupply(input);
+  }
+
+  if (isProactiveCommand(normalized)) {
+    return routeProactive(input);
   }
 
   return validationError(`Unsupported command: ${normalized}`);
