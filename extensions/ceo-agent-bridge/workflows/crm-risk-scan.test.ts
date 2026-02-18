@@ -39,4 +39,24 @@ describe("crm risk scan workflow", () => {
     expect(result.status).toBe("success");
     expect(result.data.crm_risk_list.length).toBeGreaterThan(0);
   });
+
+  test("applies action event for recommendation updates", async () => {
+    const result = await runCrmRiskScanWorkflow(context, {
+      action_event: {
+        recommendation_id: "rec_42",
+        action: "reschedule",
+        actor_id: "u_1001",
+        due_at: "2026-02-20",
+      },
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.errors).toEqual([]);
+    expect(result.data.action_result).toMatchObject({
+      recommendation_id: "rec_42",
+      action: "reschedule",
+      actor_id: "u_1001",
+      due_at: "2026-02-20",
+    });
+  });
 });

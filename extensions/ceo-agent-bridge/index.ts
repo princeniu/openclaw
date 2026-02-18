@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import type { WeeklySeries } from "./weekly-input-policy.js";
+import { buildFeishuActionRoute, validateFeishuActionInput } from "./feishu-action-handler.js";
 import { buildCeoHelpText } from "./help-text.js";
 import { resolveChannelIdentity, type IdentityRecord } from "./identity-map.js";
 import { isCeoIntentMessage, routeCeoIntent } from "./intent-router.js";
@@ -1302,6 +1303,154 @@ const plugin = {
         );
       }
     });
+
+    api.registerGatewayMethod(
+      "ceo.bridge.handle_feishu_action",
+      async ({ params, respond }: GatewayRequestHandlerOptions) => {
+        const now = Date.now();
+        const paramsRecord = readRecord(params);
+
+        const channel =
+          readStringField(paramsRecord, "channel") ??
+          readStringField(paramsRecord, "channelId") ??
+          "feishu";
+        const peerId =
+          readStringField(paramsRecord, "peerId") ??
+          readStringField(paramsRecord, "from") ??
+          readStringField(paramsRecord, "actorId") ??
+          readStringField(paramsRecord, "actor_id");
+        const threadId =
+          readStringField(paramsRecord, "threadId") ??
+          readStringField(paramsRecord, "conversationId");
+
+        let resolvedSessionKey =
+          readStringField(paramsRecord, "sessionId") ?? readStringField(paramsRecord, "session_id");
+        let tenantId =
+          readStringField(paramsRecord, "tenantId") ?? readStringField(paramsRecord, "tenant_id");
+
+        if (!tenantId && peerId) {
+          const identity = resolveChannelIdentity(
+            {
+              channel,
+              peerId,
+              threadId,
+            },
+            {
+              defaultTenantId,
+              staticMap,
+              allowlist,
+              envOverrideJson,
+              fallbackMode,
+            },
+          );
+
+          if (!identity.allowed) {
+            respond(false, {
+              code: "unauthorized",
+              status: 403,
+              error: identity.reason ?? "identity denied",
+            });
+            return;
+          }
+
+          tenantId = identity.tenantId;
+          resolvedSessionKey = resolvedSessionKey ?? identity.sessionKey;
+        }
+
+        const parsed = validateFeishuActionInput({
+          action: readStringField(paramsRecord, "action") ?? "",
+          recommendationId:
+            readStringField(paramsRecord, "recommendationId") ??
+            readStringField(paramsRecord, "recommendation_id") ??
+            "",
+          tenantId: tenantId ?? defaultTenantId,
+          actorId:
+            readStringField(paramsRecord, "actorId") ?? readStringField(paramsRecord, "actor_id"),
+          dueAt: readStringField(paramsRecord, "dueAt") ?? readStringField(paramsRecord, "due_at"),
+          requestId:
+            readStringField(paramsRecord, "requestId") ??
+            readStringField(paramsRecord, "request_id"),
+          sessionId: resolvedSessionKey,
+        });
+
+        if (!parsed.ok) {
+          respond(false, {
+            code: parsed.code,
+            status: 422,
+            error: parsed.message,
+          });
+          return;
+        }
+
+        const route = buildFeishuActionRoute(parsed.value);
+        const internalWorkflow = resolveInternalWorkflow(route.endpoint);
+        if (!internalWorkflow) {
+          respond(false, {
+            code: "internal_error",
+            status: 500,
+            error: `unsupported internal endpoint: ${route.endpoint}`,
+          });
+          return;
+        }
+
+        const requestId = parsed.value.requestId ?? `req-${now}`;
+        const sessionId =
+          parsed.value.sessionId ?? `${channel}:${peerId ?? "unknown"}:${threadId ?? "direct"}`;
+        const runId = `${internalWorkflow}-${now}`;
+        const context: WorkflowContext = {
+          tenantId: parsed.value.tenantId,
+          requestId,
+          sessionId,
+          runId,
+          nowIso: new Date(now).toISOString(),
+        };
+
+        const workflowResult = await runWorkflowByName(internalWorkflow, context, route.payload);
+
+        api.logger.info(
+          JSON.stringify(
+            buildBridgeTelemetryLog({
+              channel,
+              peerId: peerId ?? "unknown",
+              sessionKey: sessionId,
+              requestId: workflowResult.request_id,
+              runId: workflowResult.run_id,
+              latencyMs: Date.now() - now,
+              status: workflowResult.status === "failed" ? "error" : "success",
+              intent: "crm_risks",
+              endpoint: route.endpoint,
+              errorCode: workflowResult.status === "failed" ? "workflow_error" : undefined,
+            }),
+          ),
+        );
+
+        if (workflowResult.status === "failed") {
+          respond(false, {
+            code: "upstream_error",
+            status: 500,
+            error: workflowResult.errors.join("; ") || "internal workflow failed",
+            request_id: workflowResult.request_id,
+            session_id: workflowResult.session_id,
+            run_id: workflowResult.run_id,
+            errors: workflowResult.errors,
+          });
+          return;
+        }
+
+        respond(true, {
+          route: {
+            endpoint: route.endpoint,
+            method: route.method,
+          },
+          request_id: workflowResult.request_id,
+          session_id: workflowResult.session_id,
+          run_id: workflowResult.run_id,
+          status: workflowResult.status,
+          errors: workflowResult.errors,
+          data: workflowResult.data,
+        });
+      },
+    );
 
     api.registerGatewayMethod(
       "ceo.bridge.route_intent",

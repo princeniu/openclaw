@@ -1,23 +1,27 @@
 import { evaluateCrmRisks, type CrmRiskInput } from "../domain/crm-rules.js";
 import { buildDryRunSuccessResult, type WorkflowContext, type WorkflowResult } from "./types.js";
 
-function normalizeCustomers(payload: Record<string, unknown>): CrmRiskInput[] {
+type CrmAction = "accept" | "ignore" | "reschedule";
+
+type CrmActionResult = {
+  recommendation_id: string;
+  action: CrmAction;
+  action_status: "accepted" | "ignored" | "rescheduled";
+  actor_id?: string;
+  due_at?: string;
+  updated_at: string;
+};
+
+function normalizeCustomers(
+  payload: Record<string, unknown>,
+  options: { fallbackToDemo: boolean },
+): CrmRiskInput[] {
   const value = payload.customers;
   if (!Array.isArray(value) || value.length === 0) {
-    return [
-      {
-        customer_id: "demo_a",
-        days_since_contact: 35,
-        overdue_days: 0,
-        high_value: false,
-      },
-      {
-        customer_id: "demo_b",
-        days_since_contact: 12,
-        overdue_days: 18,
-        high_value: true,
-      },
-    ];
+    if (!options.fallbackToDemo) {
+      return [];
+    }
+    return buildDemoCustomers();
   }
 
   const customers: CrmRiskInput[] = [];
@@ -40,16 +44,87 @@ function normalizeCustomers(payload: Record<string, unknown>): CrmRiskInput[] {
     });
   }
 
-  return customers.length > 0
-    ? customers
-    : [
-        {
-          customer_id: "demo_a",
-          days_since_contact: 35,
-          overdue_days: 0,
-          high_value: false,
-        },
-      ];
+  if (customers.length > 0) {
+    return customers;
+  }
+  if (!options.fallbackToDemo) {
+    return [];
+  }
+  return buildDemoCustomers().slice(0, 1);
+}
+
+function buildDemoCustomers(): CrmRiskInput[] {
+  return [
+    {
+      customer_id: "demo_a",
+      days_since_contact: 35,
+      overdue_days: 0,
+      high_value: false,
+    },
+    {
+      customer_id: "demo_b",
+      days_since_contact: 12,
+      overdue_days: 18,
+      high_value: true,
+    },
+  ];
+}
+
+function mapActionStatus(action: CrmAction): CrmActionResult["action_status"] {
+  if (action === "accept") {
+    return "accepted";
+  }
+  if (action === "ignore") {
+    return "ignored";
+  }
+  return "rescheduled";
+}
+
+function normalizeAction(raw: unknown): CrmAction | undefined {
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "accept" || normalized === "ignore" || normalized === "reschedule") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function parseActionResult(
+  payload: Record<string, unknown>,
+  context: WorkflowContext,
+): CrmActionResult | undefined {
+  const actionEvent = payload.action_event;
+  if (!actionEvent || typeof actionEvent !== "object" || Array.isArray(actionEvent)) {
+    return undefined;
+  }
+
+  const record = actionEvent as Record<string, unknown>;
+  const recommendationId =
+    typeof record.recommendation_id === "string" ? record.recommendation_id.trim() : "";
+  if (!recommendationId) {
+    return undefined;
+  }
+
+  const action = normalizeAction(record.action);
+  if (!action) {
+    return undefined;
+  }
+
+  const dueAt = typeof record.due_at === "string" ? record.due_at.trim() : undefined;
+  if (action === "reschedule" && !dueAt) {
+    return undefined;
+  }
+
+  return {
+    recommendation_id: recommendationId,
+    action,
+    action_status: mapActionStatus(action),
+    actor_id: typeof record.actor_id === "string" ? record.actor_id.trim() || undefined : undefined,
+    due_at: dueAt || undefined,
+    updated_at: context.nowIso ?? new Date().toISOString(),
+  };
 }
 
 export async function runCrmRiskScanWorkflow(
@@ -61,13 +136,18 @@ export async function runCrmRiskScanWorkflow(
     mode: "dry-run";
     payload_size: number;
     crm_risk_list: ReturnType<typeof evaluateCrmRisks>;
+    action_result?: CrmActionResult;
   }>
 > {
-  const customers = normalizeCustomers(payload);
-  const result = evaluateCrmRisks(customers);
+  const actionResult = parseActionResult(payload, context);
+  const customers = normalizeCustomers(payload, {
+    fallbackToDemo: !actionResult,
+  });
+  const crmRiskList = customers.length > 0 ? evaluateCrmRisks(customers) : [];
 
   return buildDryRunSuccessResult(context, "crm-risk-scan", {
     payload_size: Object.keys(payload).length,
-    crm_risk_list: result,
+    crm_risk_list: crmRiskList,
+    action_result: actionResult,
   });
 }
