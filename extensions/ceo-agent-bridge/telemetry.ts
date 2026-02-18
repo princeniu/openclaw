@@ -18,6 +18,7 @@ export type BridgeTelemetryLog = {
   channel: string;
   peer_id: string;
   session_key: string;
+  session_id: string;
   request_id: string;
   run_id: string;
   latency_ms: number;
@@ -40,6 +41,7 @@ export function buildBridgeTelemetryLog(input: BridgeTelemetryInput): BridgeTele
     channel: input.channel,
     peer_id: input.peerId,
     session_key: input.sessionKey,
+    session_id: input.sessionKey,
     request_id: safeString(input.requestId),
     run_id: safeString(input.runId),
     latency_ms: Math.max(0, Math.round(input.latencyMs)),

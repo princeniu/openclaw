@@ -20,6 +20,7 @@ describe("ceo-agent-bridge telemetry", () => {
       channel: "telegram",
       peer_id: "u_001",
       session_key: "tenant-a:telegram:u_001",
+      session_id: "tenant-a:telegram:u_001",
       request_id: "req-123",
       run_id: "run-456",
       latency_ms: 1320,
@@ -41,6 +42,7 @@ describe("ceo-agent-bridge telemetry", () => {
     expect(event.peer_id).toBe("ou_abc");
     expect(event.status).toBe("error");
     expect(event.error_code).toBe("upstream_error");
+    expect(event.session_id).toBe("tenant-a:feishu:ou_abc");
     expect(event.request_id).toBe("n/a");
     expect(event.run_id).toBe("n/a");
   });
