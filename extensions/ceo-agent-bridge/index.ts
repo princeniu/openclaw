@@ -479,6 +479,39 @@ function formatScheduleAnalyzeResult(data: unknown): string {
   return lines.join("\n");
 }
 
+function formatCrmRisksResult(data: unknown): string {
+  const record = readRecord(data);
+  const riskList = readArrayField(record, "crm_risk_list");
+  if (riskList.length === 0) {
+    return "已完成客户风险扫描，但当前没有可展示的风险客户。";
+  }
+
+  const entries: string[] = [];
+  for (const item of riskList.slice(0, 3)) {
+    const risk = readRecord(item);
+    if (!risk) {
+      continue;
+    }
+    const customerId = readStringField(risk, "customer_id") ?? "unknown";
+    const riskLevel = readStringField(risk, "risk_level") ?? "unknown";
+    const riskScore = readNumberField(risk, "risk_score");
+    entries.push(`${customerId}（${riskLevel}${riskScore !== undefined ? `/${riskScore}` : ""}）`);
+  }
+
+  const first = readRecord(riskList[0]);
+  const firstActions = readArrayField(first, "suggested_actions").filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+
+  const lines = [
+    "已完成客户风险扫描。",
+    entries.length ? `高优先客户：${entries.join("、")}` : undefined,
+    firstActions.length ? `建议动作：${firstActions.slice(0, 2).join("；")}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+
+  return lines.join("\n");
+}
+
 function formatChatResult(params: {
   intent: string;
   runId?: string;
@@ -499,6 +532,9 @@ function formatChatResult(params: {
   }
   if (params.intent === "schedule_analyze") {
     return formatScheduleAnalyzeResult(params.data);
+  }
+  if (params.intent === "crm_risks") {
+    return formatCrmRisksResult(params.data);
   }
   return "已完成请求处理。";
 }
