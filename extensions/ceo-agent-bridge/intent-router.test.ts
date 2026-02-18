@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { routeCeoIntent } from "./intent-router.js";
 
 describe("ceo-agent-bridge intent router", () => {
-  test("routes meeting keyword to meeting extract endpoint", () => {
+  test("routes meeting keyword to internal meeting extract workflow endpoint", () => {
     const result = routeCeoIntent({
       messageText: "会议纪要 今天讨论了产品发布节奏",
       tenantId: "tenant-a",
@@ -14,7 +14,7 @@ describe("ceo-agent-bridge intent router", () => {
     if (!result.ok) {
       throw new Error("expected ok result");
     }
-    expect(result.route.endpoint).toBe("/api/v1/meetings/extract");
+    expect(result.route.endpoint).toBe("/ceo/workflows/meeting-extract");
     expect(result.route.method).toBe("POST");
     expect(result.route.payload).toMatchObject({
       tenant_id: "tenant-a",

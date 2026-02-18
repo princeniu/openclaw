@@ -155,7 +155,7 @@ function routeMeeting(input: CeoIntentInput, normalized: string): CeoIntentResul
     ok: true,
     route: {
       intent: "meeting_extract",
-      endpoint: "/api/v1/meetings/extract",
+      endpoint: "/ceo/workflows/meeting-extract",
       method: "POST",
       payload: {
         tenant_id: input.tenantId,
