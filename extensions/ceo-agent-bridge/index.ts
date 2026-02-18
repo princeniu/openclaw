@@ -513,6 +513,30 @@ function formatCrmRisksResult(data: unknown): string {
   return lines.join("\n");
 }
 
+function formatProactiveBriefResult(data: unknown): string {
+  const record = readRecord(data);
+  const summary = readStringField(record, "summary");
+  const triggerTypes = readArrayField(record, "trigger_types").filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+  const proactiveItems = readArrayField(record, "proactive_items").filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+  const actionItems = readArrayField(record, "action_items").filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+
+  const lines = [
+    "已生成主动简报。",
+    summary,
+    triggerTypes.length ? `触发类型：${triggerTypes.join("、")}` : undefined,
+    proactiveItems.length ? `提醒：${proactiveItems.slice(0, 2).join("；")}` : undefined,
+    actionItems.length ? `建议执行：${actionItems.slice(0, 2).join("；")}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+
+  return lines.join("\n");
+}
+
 function formatChatResult(params: {
   intent: string;
   runId?: string;
@@ -536,6 +560,9 @@ function formatChatResult(params: {
   }
   if (params.intent === "crm_risks") {
     return formatCrmRisksResult(params.data);
+  }
+  if (params.intent === "proactive_brief") {
+    return formatProactiveBriefResult(params.data);
   }
   return "已完成请求处理。";
 }
