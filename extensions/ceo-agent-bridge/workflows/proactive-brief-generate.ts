@@ -1,3 +1,4 @@
+import { calculateEffectMetrics, type EffectEvent } from "../domain/effect-metrics.js";
 import {
   analyzeProactiveTriggers,
   type CrmRiskSignal,
@@ -101,6 +102,36 @@ function parseRecentBriefs(payload: Record<string, unknown>): RecentBriefSignal[
   return recent;
 }
 
+function parseEffectEvents(payload: Record<string, unknown>): EffectEvent[] {
+  const value = payload.effect_events;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const events: EffectEvent[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    events.push({
+      status: typeof record.status === "string" ? record.status.trim() : undefined,
+      occurred_at: typeof record.occurred_at === "string" ? record.occurred_at.trim() : undefined,
+    });
+  }
+  return events;
+}
+
+function parsePilotAccounts(payload: Record<string, unknown>): string[] {
+  const value = payload.pilot_accounts;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 function readPositiveNumber(
   payload: Record<string, unknown>,
   key: string,
@@ -174,6 +205,10 @@ function applyRecommendationPolicy(params: {
   };
 }
 
+function formatRate(rate: number): string {
+  return `${(rate * 100).toFixed(1)}%`;
+}
+
 export async function runProactiveBriefGenerateWorkflow(
   context: WorkflowContext,
   payload: Record<string, unknown> = {},
@@ -193,6 +228,10 @@ export async function runProactiveBriefGenerateWorkflow(
     proactive_items: string[];
     action_items: string[];
     summary: string;
+    report_scope: "daily_brief" | "weekly_effect";
+    weekly_effect_report?: ReturnType<typeof calculateEffectMetrics> & {
+      pilot_accounts: number;
+    };
   }>
 > {
   const generatedAt =
@@ -203,8 +242,14 @@ export async function runProactiveBriefGenerateWorkflow(
   const crmRisks = parseCrmRisks(payload);
   const trips = parseTrips(payload);
   const recentBriefs = parseRecentBriefs(payload);
+  const effectEvents = parseEffectEvents(payload);
+  const pilotAccounts = parsePilotAccounts(payload);
   const minPriority = readPositiveNumber(payload, "min_priority", 60);
   const cooldownHours = readPositiveNumber(payload, "cooldown_hours", 24);
+  const reportScope =
+    typeof payload.report_scope === "string" && payload.report_scope.trim() === "weekly_effect"
+      ? "weekly_effect"
+      : "daily_brief";
 
   const analysis = analyzeProactiveTriggers({
     nowIso: generatedAt,
@@ -224,7 +269,23 @@ export async function runProactiveBriefGenerateWorkflow(
     typeof payload.generation_mode === "string" && payload.generation_mode.trim() === "manual"
       ? "manual"
       : "daily_auto";
+  const weeklyEffectReport =
+    reportScope === "weekly_effect"
+      ? {
+          ...calculateEffectMetrics({
+            nowIso: generatedAt,
+            events: effectEvents,
+          }),
+          pilot_accounts: pilotAccounts.length,
+        }
+      : undefined;
+
   const summary = (() => {
+    if (reportScope === "weekly_effect" && weeklyEffectReport) {
+      return `周效果报表：采纳率 ${formatRate(weeklyEffectReport.adoption_rate)}，忽略率 ${formatRate(
+        weeklyEffectReport.ignore_rate,
+      )}，执行完成率 ${formatRate(weeklyEffectReport.completion_rate)}。`;
+    }
     if (policyResult.filtered.length > 0) {
       return `已生成今日主动简报，触发 ${policyResult.filtered.length} 类关键信号。`;
     }
@@ -247,5 +308,7 @@ export async function runProactiveBriefGenerateWorkflow(
     proactive_items: policyResult.filtered.map((item) => item.brief),
     action_items: policyResult.filtered.map((item) => item.action),
     summary,
+    report_scope: reportScope,
+    weekly_effect_report: weeklyEffectReport,
   });
 }

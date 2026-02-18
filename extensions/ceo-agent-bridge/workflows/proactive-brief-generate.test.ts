@@ -108,4 +108,29 @@ describe("proactive brief generate workflow", () => {
     expect(result.data.min_priority).toBe(70);
     expect(result.data.cooldown_hours).toBe(24);
   });
+
+  test("outputs weekly pilot effect report", async () => {
+    const result = await runProactiveBriefGenerateWorkflow(context, {
+      report_scope: "weekly_effect",
+      pilot_accounts: ["pilot_a", "pilot_b", "pilot_c"],
+      effect_events: [
+        { status: "accepted", occurred_at: "2026-02-17T10:00:00.000Z" },
+        { status: "accepted", occurred_at: "2026-02-17T11:00:00.000Z" },
+        { status: "ignored", occurred_at: "2026-02-17T12:00:00.000Z" },
+        { status: "completed", occurred_at: "2026-02-17T13:00:00.000Z" },
+      ],
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.data.summary).toContain("周效果报表");
+    expect(result.data.weekly_effect_report).toMatchObject({
+      pilot_accounts: 3,
+      accepted_count: 2,
+      ignored_count: 1,
+      completed_count: 1,
+    });
+    expect(result.data.weekly_effect_report.adoption_rate).toBeCloseTo(0.6667, 3);
+    expect(result.data.weekly_effect_report.ignore_rate).toBeCloseTo(0.3333, 3);
+    expect(result.data.weekly_effect_report.completion_rate).toBeCloseTo(0.5, 3);
+  });
 });

@@ -516,6 +516,8 @@ function formatCrmRisksResult(data: unknown): string {
 function formatProactiveBriefResult(data: unknown): string {
   const record = readRecord(data);
   const summary = readStringField(record, "summary");
+  const reportScope = readStringField(record, "report_scope") ?? "daily_brief";
+  const weeklyEffectReport = readRecord(record?.weekly_effect_report);
   const triggerTypes = readArrayField(record, "trigger_types").filter(
     (item): item is string => typeof item === "string" && item.trim().length > 0,
   );
@@ -525,6 +527,25 @@ function formatProactiveBriefResult(data: unknown): string {
   const actionItems = readArrayField(record, "action_items").filter(
     (item): item is string => typeof item === "string" && item.trim().length > 0,
   );
+
+  if (reportScope === "weekly_effect" && weeklyEffectReport) {
+    const adoptionRate = readNumberField(weeklyEffectReport, "adoption_rate");
+    const ignoreRate = readNumberField(weeklyEffectReport, "ignore_rate");
+    const completionRate = readNumberField(weeklyEffectReport, "completion_rate");
+    const pilotAccounts = readNumberField(weeklyEffectReport, "pilot_accounts");
+
+    const lines = [
+      "已生成试点客户周效果报表。",
+      summary,
+      pilotAccounts !== undefined ? `试点客户数：${pilotAccounts}` : undefined,
+      adoptionRate !== undefined ? `采纳率：${(adoptionRate * 100).toFixed(1)}%` : undefined,
+      ignoreRate !== undefined ? `忽略率：${(ignoreRate * 100).toFixed(1)}%` : undefined,
+      completionRate !== undefined
+        ? `执行完成率：${(completionRate * 100).toFixed(1)}%`
+        : undefined,
+    ].filter((line): line is string => Boolean(line));
+    return lines.join("\n");
+  }
 
   const lines = [
     "已生成主动简报。",
