@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS oc_workflow_events;
+DROP TABLE IF EXISTS oc_runs_audit;
+DROP TABLE IF EXISTS oc_proactive_briefs;
+DROP TABLE IF EXISTS oc_recommendations;
+DROP TABLE IF EXISTS oc_supply_signals;
+DROP TABLE IF EXISTS oc_crm_interactions;
+DROP TABLE IF EXISTS oc_crm_accounts;
+DROP TABLE IF EXISTS oc_schedule_events;
+DROP TABLE IF EXISTS oc_risks;
+DROP TABLE IF EXISTS oc_tasks;
