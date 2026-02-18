@@ -63,4 +63,49 @@ describe("proactive brief generate workflow", () => {
     expect(result.data.proactive_items).toEqual([]);
     expect(result.data.summary).toContain("暂无高优先级主动提醒");
   });
+
+  test("suppresses repeated and low-priority suggestions by policy", async () => {
+    const result = await runProactiveBriefGenerateWorkflow(context, {
+      schedule_events: [
+        {
+          start_at: "2026-02-18T09:00:00.000Z",
+          end_at: "2026-02-18T10:00:00.000Z",
+        },
+        {
+          start_at: "2026-02-18T09:30:00.000Z",
+          end_at: "2026-02-18T10:30:00.000Z",
+        },
+      ],
+      crm_risks: [
+        {
+          customer_id: "c_100",
+          risk_level: "high",
+          risk_score: 88,
+        },
+      ],
+      trips: [
+        {
+          destination: "Shanghai",
+          start_date: "2026-02-21",
+          customer_meetings: 2,
+        },
+      ],
+      min_priority: 70,
+      cooldown_hours: 24,
+      recent_briefs: [
+        {
+          trigger_type: "crm_high_risk",
+          sent_at: "2026-02-18T08:30:00.000Z",
+        },
+      ],
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.data.trigger_types).toEqual(["schedule_conflict"]);
+    expect(result.data.suppressed_types).toEqual(
+      expect.arrayContaining(["crm_high_risk", "travel_window"]),
+    );
+    expect(result.data.min_priority).toBe(70);
+    expect(result.data.cooldown_hours).toBe(24);
+  });
 });

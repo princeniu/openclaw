@@ -26,10 +26,18 @@ export type ProactiveTriggerInput = {
   trips: TripWindowSignal[];
 };
 
+export type ProactiveRecommendation = {
+  trigger_type: ProactiveTriggerType;
+  priority: number;
+  brief: string;
+  action: string;
+};
+
 export type ProactiveTriggerAnalysis = {
   trigger_types: ProactiveTriggerType[];
   proactive_items: string[];
   action_items: string[];
+  recommendations: ProactiveRecommendation[];
 };
 
 function toEpoch(value: string | undefined): number | undefined {
@@ -103,36 +111,42 @@ function detectUpcomingTrips(nowIso: string, trips: TripWindowSignal[]): number 
 }
 
 export function analyzeProactiveTriggers(input: ProactiveTriggerInput): ProactiveTriggerAnalysis {
-  const triggerTypes: ProactiveTriggerType[] = [];
-  const proactiveItems: string[] = [];
-  const actionItems: string[] = [];
+  const recommendations: ProactiveRecommendation[] = [];
 
   const scheduleConflicts = detectScheduleConflict(input.scheduleEvents);
   if (scheduleConflicts > 0) {
-    triggerTypes.push("schedule_conflict");
-    proactiveItems.push(`检测到 ${scheduleConflicts} 个日程冲突，建议压缩例会并释放深度工作时段。`);
-    actionItems.push("将冲突会议合并到固定会议窗，并保留 2 个以上深度工作块。");
+    recommendations.push({
+      trigger_type: "schedule_conflict",
+      priority: 75,
+      brief: `检测到 ${scheduleConflicts} 个日程冲突，建议压缩例会并释放深度工作时段。`,
+      action: "将冲突会议合并到固定会议窗，并保留 2 个以上深度工作块。",
+    });
   }
 
   const highRiskCustomers = detectHighRiskCustomers(input.crmRisks);
   if (highRiskCustomers > 0) {
-    triggerTypes.push("crm_high_risk");
-    proactiveItems.push(`识别到 ${highRiskCustomers} 个高风险客户，需要 24 小时内跟进。`);
-    actionItems.push("为高风险客户生成跟进清单，并推送负责人与截止时间。");
+    recommendations.push({
+      trigger_type: "crm_high_risk",
+      priority: 90,
+      brief: `识别到 ${highRiskCustomers} 个高风险客户，需要 24 小时内跟进。`,
+      action: "为高风险客户生成跟进清单，并推送负责人与截止时间。",
+    });
   }
 
   const upcomingTrips = detectUpcomingTrips(input.nowIso, input.trips);
   if (upcomingTrips > 0) {
-    triggerTypes.push("travel_window");
-    proactiveItems.push(
-      `未来 7 天内有 ${upcomingTrips} 个出差窗口，可提前准备目的地客户会面建议。`,
-    );
-    actionItems.push("自动整理出差目的地客户动态，并生成会前沟通建议。");
+    recommendations.push({
+      trigger_type: "travel_window",
+      priority: 65,
+      brief: `未来 7 天内有 ${upcomingTrips} 个出差窗口，可提前准备目的地客户会面建议。`,
+      action: "自动整理出差目的地客户动态，并生成会前沟通建议。",
+    });
   }
 
   return {
-    trigger_types: triggerTypes,
-    proactive_items: proactiveItems,
-    action_items: actionItems,
+    trigger_types: recommendations.map((item) => item.trigger_type),
+    proactive_items: recommendations.map((item) => item.brief),
+    action_items: recommendations.map((item) => item.action),
+    recommendations,
   };
 }
